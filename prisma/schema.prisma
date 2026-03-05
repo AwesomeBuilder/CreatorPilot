@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String            @id @default(cuid())
+  niche            String?
+  tone             String?
+  timezone         String            @default("America/Los_Angeles")
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  sources          Source[]
+  mediaAssets      MediaAsset[]
+  jobs             Job[]
+  renders          Render[]
+  oauthCredentials OAuthCredential[]
+}
+
+model Source {
+  id        String   @id @default(cuid())
+  userId    String
+  url       String
+  enabled   Boolean  @default(true)
+  isCurated Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, enabled])
+}
+
+model MediaAsset {
+  id        String   @id @default(cuid())
+  userId    String
+  path      String
+  type      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Job {
+  id         String   @id @default(cuid())
+  userId     String
+  type       String
+  status     String   @default("queued")
+  logs       String?
+  outputJson String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  renders    Render[]
+
+  @@index([userId, type])
+  @@index([status, createdAt])
+}
+
+model Render {
+  id           String   @id @default(cuid())
+  userId       String
+  jobId        String
+  variantIndex Int
+  path         String
+  duration     Int
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, variantIndex])
+  @@index([userId, createdAt])
+}
+
+model OAuthCredential {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String
+  providerAccountId String?
+  accessToken       String?
+  refreshToken      String?
+  scope             String?
+  tokenType         String?
+  expiryDate        DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+}
