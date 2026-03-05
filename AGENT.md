@@ -2,7 +2,7 @@
 
 ## Project
 
-InfluencePilot hackathon MVP.
+Creator Pilot hackathon MVP.
 
 Goal: turn trending RSS news + creator media into YouTube-ready renders, metadata, scheduling suggestions, and upload actions.
 

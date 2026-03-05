@@ -35,7 +35,7 @@ yarn-error.log*
 .env*
 
 # local data/assets
-dev.db
+dev*.db
 uploads/*
 !uploads/.gitkeep
 renders/*

@@ -2,7 +2,7 @@
 
 ## Context
 
-This is a hackathon MVP called InfluencePilot.
+This is a hackathon MVP called Creator Pilot.
 
 Core flow:
 

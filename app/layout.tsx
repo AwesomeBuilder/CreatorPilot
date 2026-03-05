@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "InfluencePilot",
+  title: "Creator Pilot",
   description: "AI agent that turns trends and creator media into YouTube-ready videos.",
 };
 

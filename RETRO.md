@@ -13,7 +13,7 @@
 
 ### 2026-03-05
 
-- Summary: Initial MVP implementation for InfluencePilot completed (onboarding, dashboard workflow, APIs, jobs, rendering, and YouTube integration with mock fallback).
+- Summary: Initial MVP implementation for Creator Pilot completed (onboarding, dashboard workflow, APIs, jobs, rendering, and YouTube integration with mock fallback).
 - What went well:
   - Monorepo architecture stayed simple and local-first.
   - End-to-end path is functional with clear job polling.

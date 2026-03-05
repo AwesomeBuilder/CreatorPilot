@@ -1,6 +1,6 @@
-# InfluencePilot
+# Creator Pilot
 
-InfluencePilot is a hackathon MVP that turns trending news + creator media into a YouTube-ready video pipeline:
+Creator Pilot is a hackathon MVP that turns trending news + creator media into a YouTube-ready video pipeline:
 
 News trends -> content ideas -> media selection -> FFmpeg render variants -> metadata/captions -> scheduling recommendation -> YouTube upload.
 
