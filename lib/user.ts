@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/db";
-
-const DEFAULT_TIMEZONE = "America/Los_Angeles";
+import { DEFAULT_TIMEZONE } from "@/lib/profile-options";
 
 export async function getOrCreateLocalUser() {
   const existing = await prisma.user.findFirst({

@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { TIMEZONE_VALUES } from "@/lib/profile-options";
 import { recommendPublishTime } from "@/lib/schedule";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
 
 const InputSchema = z.object({
-  timezone: z.string().optional(),
+  timezone: z.enum(TIMEZONE_VALUES).optional(),
 });
 
 export async function POST(req: Request) {

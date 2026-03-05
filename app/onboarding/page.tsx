@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { DEFAULT_TIMEZONE, NICHE_OPTIONS, NICHE_VALUES, TIMEZONE_OPTIONS, TIMEZONE_VALUES } from "@/lib/profile-options";
+
 type ProfileResponse = {
   user: {
     niche: string | null;
@@ -18,11 +20,14 @@ type ProfileResponse = {
   };
 };
 
+const NICHE_VALUE_SET = new Set<string>(NICHE_VALUES);
+const TIMEZONE_VALUE_SET = new Set<string>(TIMEZONE_VALUES);
+
 export default function OnboardingPage() {
   const router = useRouter();
   const [niche, setNiche] = useState("");
   const [tone, setTone] = useState("");
-  const [timezone, setTimezone] = useState("America/Los_Angeles");
+  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE);
   const [sourcesText, setSourcesText] = useState("");
   const [youtube, setYoutube] = useState<ProfileResponse["youtube"] | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -37,9 +42,12 @@ export default function OnboardingPage() {
         const response = await fetch("/api/profile");
         const data = (await response.json()) as ProfileResponse;
 
-        setNiche(data.user.niche ?? "");
+        const loadedNiche = data.user.niche ?? "";
+        const loadedTimezone = data.user.timezone ?? DEFAULT_TIMEZONE;
+
+        setNiche(NICHE_VALUE_SET.has(loadedNiche) ? loadedNiche : "");
         setTone(data.user.tone ?? "");
-        setTimezone(data.user.timezone ?? "America/Los_Angeles");
+        setTimezone(TIMEZONE_VALUE_SET.has(loadedTimezone) ? loadedTimezone : DEFAULT_TIMEZONE);
         setSourcesText(data.sources.map((source) => source.url).join("\n"));
         setYoutube(data.youtube);
       } catch {
@@ -90,8 +98,8 @@ export default function OnboardingPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          niche,
-          tone,
+          niche: niche || null,
+          tone: tone.trim() || null,
           timezone,
           sources,
         }),
@@ -122,23 +130,35 @@ export default function OnboardingPage() {
       <header className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Creator Pilot Onboarding</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Set your creator profile, RSS sources, and YouTube connection. Keep it simple for MVP.
+          Set your creator profile, RSS sources, and YouTube connection.
         </p>
       </header>
 
       <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <label className="block text-sm font-medium text-slate-800">
           Niche
-          <input
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+          <p className="mt-1 text-xs font-normal text-slate-600">
+            Pick one focus area for the hackathon. This also selects default curated feeds.
+          </p>
+          <select
+            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             value={niche}
             onChange={(event) => setNiche(event.target.value)}
-            placeholder="AI tools for creators"
-          />
+          >
+            <option value="">Select a niche</option>
+            {NICHE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label className="block text-sm font-medium text-slate-800">
           Tone
+          <p className="mt-1 text-xs font-normal text-slate-600">
+            Describe your writing style as comma-separated values, for example: smart, concise, tactical.
+          </p>
           <input
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
             value={tone}
@@ -149,21 +169,32 @@ export default function OnboardingPage() {
 
         <label className="block text-sm font-medium text-slate-800">
           Timezone
-          <input
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+          <p className="mt-1 text-xs font-normal text-slate-600">
+            Used to recommend publish time in your local hours.
+          </p>
+          <select
+            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             value={timezone}
             onChange={(event) => setTimezone(event.target.value)}
-            placeholder="America/Los_Angeles"
-          />
+          >
+            {TIMEZONE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label className="block text-sm font-medium text-slate-800">
           RSS sources (one per line)
+          <p className="mt-1 text-xs font-normal text-slate-600">
+            Enter full RSS feed URLs, one URL per line. Leave this empty to auto-fill curated sources for your niche.
+          </p>
           <textarea
             className="mt-1 min-h-28 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
             value={sourcesText}
             onChange={(event) => setSourcesText(event.target.value)}
-            placeholder="Leave empty to use curated defaults after save"
+            placeholder={"https://example.com/feed.xml\nhttps://another-site.com/rss"}
           />
         </label>
 

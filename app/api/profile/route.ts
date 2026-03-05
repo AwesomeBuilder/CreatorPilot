@@ -3,15 +3,25 @@ import { z } from "zod";
 
 import { prisma } from "@/lib/db";
 import { getCuratedSourcesForNiche } from "@/lib/default-sources";
+import { NICHE_VALUES, TIMEZONE_VALUES } from "@/lib/profile-options";
 import { resolveUser } from "@/lib/user";
 import { getYoutubeConnectionStatus } from "@/lib/youtube";
 
 export const runtime = "nodejs";
 
+function trimEmptyToNull(value: unknown) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
 const ProfileInput = z.object({
-  niche: z.string().trim().min(1).optional(),
-  tone: z.string().trim().min(1).optional(),
-  timezone: z.string().trim().min(1).optional(),
+  niche: z.preprocess(trimEmptyToNull, z.enum(NICHE_VALUES).nullable().optional()),
+  tone: z.preprocess(trimEmptyToNull, z.string().min(1).nullable().optional()),
+  timezone: z.preprocess(trimEmptyToNull, z.enum(TIMEZONE_VALUES).optional()),
   sources: z.array(z.string().url()).optional(),
 });
 
@@ -38,9 +48,9 @@ export async function POST(req: Request) {
   const updatedUser = await prisma.user.update({
     where: { id: user.id },
     data: {
-      niche: parsed.data.niche,
-      tone: parsed.data.tone,
-      timezone: parsed.data.timezone,
+      niche: parsed.data.niche === undefined ? undefined : parsed.data.niche,
+      tone: parsed.data.tone === undefined ? undefined : parsed.data.tone,
+      timezone: parsed.data.timezone === undefined ? undefined : parsed.data.timezone,
     },
   });
 
