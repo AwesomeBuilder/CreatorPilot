@@ -11,7 +11,7 @@ The app is intentionally local-first and monorepo-only for reliability and speed
 - Frontend: Next.js (App Router), React, TypeScript, TailwindCSS
 - Backend: Next.js Route Handlers (`/app/api/*`)
 - Database: SQLite + Prisma
-- AI: OpenAI-compatible Chat Completions API
+- AI: Gemini via OpenAI-compatible Chat Completions API
 - Trend ingest: `rss-parser`
 - Rendering: FFmpeg
 - Publishing: Google OAuth + YouTube Data API v3 (`googleapis`)
@@ -107,8 +107,9 @@ npm run dev
 DATABASE_URL="file:./dev.db"
 
 LLM_API_KEY=""
-LLM_MODEL=""
-LLM_BASE_URL="https://api.openai.com/v1"
+LLM_MODEL="gemini-2.5-pro"
+LLM_MODEL_HARD="gemini-3.1-pro-preview"
+LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
 
 GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
@@ -122,14 +123,16 @@ With the default `DATABASE_URL`, Prisma uses `prisma/dev.db`.
 
 ## API Key Setup
 
-### OpenAI-compatible LLM
+### LLM API (Gemini default)
 
 1. Create an API key from your provider dashboard.
 2. Set `LLM_API_KEY`.
-3. Set `LLM_MODEL` (example: `gpt-4.1-mini` or your compatible model).
-4. If using a non-OpenAI endpoint, set `LLM_BASE_URL`.
+3. Set `LLM_MODEL` (default model, example: `gemini-2.5-pro`).
+4. Set `LLM_MODEL_HARD` (escalation model, example: `gemini-3.1-pro-preview`).
+5. If using another compatible endpoint, set `LLM_BASE_URL`.
 
 If LLM config is missing, fallback logic is used for ideas/metadata/trend polishing.
+When configured, the app routes most prompts to `LLM_MODEL` and escalates hard/failed attempts to `LLM_MODEL_HARD`.
 
 ### Google OAuth + YouTube Data API v3
 
@@ -215,4 +218,5 @@ Default behavior:
 - `ffmpeg not found`: install FFmpeg and confirm with `ffmpeg -version`
 - RSS fetch empty: verify feed URLs are valid and reachable
 - OAuth callback error: verify `GOOGLE_REDIRECT_URI` and OAuth app redirect URI match exactly
+- Google "app hasn't been verified" screen: keep OAuth app in Testing mode, add your Google account under test users, then proceed via Advanced for local/dev testing
 - Upload in mock mode unexpectedly: check `YOUTUBE_UPLOAD_MOCK` and OAuth env vars

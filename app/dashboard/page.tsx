@@ -117,7 +117,9 @@ export default function DashboardPage() {
     }
 
     if (youtubeParam === "oauth_error") {
-      setError("YouTube OAuth failed. Check Google OAuth settings and try again.");
+      setError(
+        "YouTube OAuth failed. If Google shows 'app hasn't been verified', set OAuth app to Testing, add your Google account as a test user, then retry and continue via Advanced.",
+      );
     }
   }, []);
 
