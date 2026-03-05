@@ -118,6 +118,8 @@ APP_BASE_URL="http://localhost:3000"
 YOUTUBE_UPLOAD_MOCK="true"
 ```
 
+With the default `DATABASE_URL`, Prisma uses `prisma/dev.db`.
+
 ## API Key Setup
 
 ### OpenAI-compatible LLM

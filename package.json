@@ -10,8 +10,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "db:init": "prisma generate && prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/init.sql && sqlite3 dev.db < prisma/init.sql",
-    "db:reset": "rm -f dev.db && npm run db:init"
+    "db:init": "prisma generate && prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/init.sql && sqlite3 prisma/dev.db < prisma/init.sql",
+    "db:reset": "rm -f prisma/dev.db dev.db && npm run db:init"
   },
   "dependencies": {
     "@prisma/client": "^6.17.1",
