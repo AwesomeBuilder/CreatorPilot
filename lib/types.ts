@@ -1,9 +1,20 @@
 export type JobStatus = "queued" | "running" | "complete" | "failed";
 
+export type TrendSourceLink = {
+  url: string;
+  sourceUrl: string;
+  title: string;
+  publishedAt?: string;
+};
+
 export type Trend = {
   trendTitle: string;
   summary: string;
   links: string[];
+  popularityScore?: number;
+  sourceCount?: number;
+  itemCount?: number;
+  sourceLinks?: TrendSourceLink[];
 };
 
 export type Idea = {

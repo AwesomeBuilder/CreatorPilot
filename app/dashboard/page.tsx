@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { BrandLogo } from "@/components/BrandLogo";
 import { IdeaCards } from "@/components/IdeaCards";
 import { JobStatusBadge } from "@/components/JobStatusBadge";
 import { MetadataPanel } from "@/components/MetadataPanel";
@@ -11,6 +12,8 @@ import { StepSidebar } from "@/components/StepSidebar";
 import { TrendPicker } from "@/components/TrendPicker";
 import { UploadPanel } from "@/components/UploadPanel";
 import { YoutubePanel } from "@/components/YoutubePanel";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import type { Idea, MetadataResult, ScheduleRecommendation, Trend } from "@/lib/types";
 
 type ProfilePayload = {
@@ -38,6 +41,7 @@ type JobRecord = {
   id: string;
   type: string;
   status: "queued" | "running" | "complete" | "failed";
+  createdAt?: string;
   logs: string[] | null;
   outputJson: unknown;
   renders?: Array<{ id: string; variantIndex: number; path: string; duration: number }>;
@@ -73,12 +77,16 @@ export default function DashboardPage() {
 
   const [latestRenderJob, setLatestRenderJob] = useState<JobRecord | null>(null);
   const [latestYoutubeJob, setLatestYoutubeJob] = useState<JobRecord | null>(null);
+  const [jobHistory, setJobHistory] = useState<Array<{ id: string; type: string; status: JobRecord["status"]; createdAt?: string }>>(
+    [],
+  );
 
   const [activeJob, setActiveJob] = useState<{ id: string; type: string; status: JobRecord["status"] } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMetadataLoading, setIsMetadataLoading] = useState(false);
   const [isYoutubeStarting, setIsYoutubeStarting] = useState(false);
+  const [isAutopilotRunning, setIsAutopilotRunning] = useState(false);
 
   const selectedTrend = trends[selectedTrendIndex] ?? null;
   const selectedIdea = ideas[selectedIdeaIndex] ?? null;
@@ -123,6 +131,14 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const rememberJob = (job: JobRecord, fallbackType?: string) => {
+    const type = fallbackType ?? job.type;
+    setJobHistory((current) => {
+      const withoutCurrent = current.filter((item) => item.id !== job.id);
+      return [{ id: job.id, type, status: job.status, createdAt: job.createdAt }, ...withoutCurrent].slice(0, 12);
+    });
+  };
+
   const waitForJob = async (jobId: string, type: string) => {
     for (let attempts = 0; attempts < 180; attempts += 1) {
       const response = await fetch(`/api/jobs/${jobId}`);
@@ -136,11 +152,13 @@ export default function DashboardPage() {
       setActiveJob({ id: job.id, type, status: job.status });
 
       if (job.status === "complete") {
+        rememberJob(job, type);
         setActiveJob({ id: job.id, type, status: "complete" });
         return job;
       }
 
       if (job.status === "failed") {
+        rememberJob(job, type);
         setActiveJob({ id: job.id, type, status: "failed" });
         const logs = Array.isArray(job.logs) ? job.logs : [];
         throw new Error(logs.at(-1) ?? "Job failed");
@@ -166,23 +184,28 @@ export default function DashboardPage() {
 
       const completed = await waitForJob(data.jobId, "trends");
       const output = completed.outputJson as { trends?: Trend[] };
+      const fetchedTrends = output?.trends ?? [];
 
-      setTrends(output?.trends ?? []);
+      setTrends(fetchedTrends);
       setSelectedTrendIndex(0);
       setIdeas([]);
       setMetadata(null);
       setSchedule(null);
-      setMessage(`Fetched ${(output?.trends ?? []).length} trend clusters.`);
+      setMessage(`Fetched ${fetchedTrends.length} trend clusters.`);
       setActiveStep(1);
+      return fetchedTrends;
     } catch (jobError) {
       setError(jobError instanceof Error ? jobError.message : "Trend detection failed");
+      return null;
     }
   };
 
-  const runIdeas = async () => {
-    if (!selectedTrend) {
+  const runIdeas = async (trendOverride?: Trend) => {
+    const trendForIdeas = trendOverride ?? selectedTrend;
+
+    if (!trendForIdeas) {
       setError("Select a trend first.");
-      return;
+      return null;
     }
 
     setError(null);
@@ -192,7 +215,7 @@ export default function DashboardPage() {
       const response = await fetch("/api/ideas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trend: selectedTrend }),
+        body: JSON.stringify({ trend: trendForIdeas }),
       });
 
       const data = await response.json();
@@ -202,16 +225,34 @@ export default function DashboardPage() {
 
       const completed = await waitForJob(data.jobId, "ideas");
       const output = completed.outputJson as { ideas?: Idea[] };
+      const generatedIdeas = output.ideas ?? [];
 
-      setIdeas(output.ideas ?? []);
+      setIdeas(generatedIdeas);
       setSelectedIdeaIndex(0);
       setMetadata(null);
       setSchedule(null);
-      setMessage("Generated 3 idea candidates.");
-      setActiveStep(3);
+      setMessage(`Generated ${generatedIdeas.length} idea candidates.`);
+      setActiveStep(2);
+      return generatedIdeas;
     } catch (jobError) {
       setError(jobError instanceof Error ? jobError.message : "Idea generation failed");
+      return null;
     }
+  };
+
+  const startRenderJob = async (payload: { idea: Idea; mediaAssetIds: string[]; preference: "auto" | "shorts" | "landscape" }) => {
+    const response = await fetch("/api/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error ?? "Render failed to start");
+    }
+
+    return data.jobId as string;
   };
 
   const handleRenderJobCreated = async (jobId: string) => {
@@ -228,10 +269,14 @@ export default function DashboardPage() {
     }
   };
 
-  const generateMetadataAndSchedule = async () => {
-    if (!selectedTrend || !selectedIdea) {
+  const generateMetadataAndSchedule = async (params?: { trend?: Trend; idea?: Idea; advanceStep?: boolean }) => {
+    const trendForMetadata = params?.trend ?? selectedTrend;
+    const ideaForMetadata = params?.idea ?? selectedIdea;
+    const shouldAdvance = params?.advanceStep ?? true;
+
+    if (!trendForMetadata || !ideaForMetadata) {
       setError("Select trend and idea first.");
-      return;
+      return null;
     }
 
     setIsMetadataLoading(true);
@@ -242,7 +287,7 @@ export default function DashboardPage() {
         fetch("/api/metadata", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ trend: selectedTrend, idea: selectedIdea }),
+          body: JSON.stringify({ trend: trendForMetadata, idea: ideaForMetadata }),
         }),
         fetch("/api/schedule", {
           method: "POST",
@@ -265,9 +310,13 @@ export default function DashboardPage() {
       setMetadata(metadataData.metadata);
       setSchedule(scheduleData.schedule);
       setMessage("Metadata and scheduling recommendation generated.");
-      setActiveStep(6);
+      if (shouldAdvance) {
+        setActiveStep(6);
+      }
+      return { metadata: metadataData.metadata as MetadataResult, schedule: scheduleData.schedule as ScheduleRecommendation };
     } catch (generationError) {
       setError(generationError instanceof Error ? generationError.message : "Metadata generation failed");
+      return null;
     } finally {
       setIsMetadataLoading(false);
     }
@@ -294,10 +343,12 @@ export default function DashboardPage() {
     setProfile((current) => (current ? { ...current, youtube: data.status } : current));
   };
 
-  const startYoutubeUpload = async (payload: { renderId: string; publishAt?: string }) => {
-    if (!metadata) {
+  const startYoutubeUpload = async (payload: { renderId: string; publishAt?: string; metadataOverride?: MetadataResult }) => {
+    const metadataForUpload = payload.metadataOverride ?? metadata;
+
+    if (!metadataForUpload) {
       setError("Generate metadata first.");
-      return;
+      return null;
     }
 
     setIsYoutubeStarting(true);
@@ -310,9 +361,9 @@ export default function DashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           renderId: payload.renderId,
-          title: metadata.youtubeTitle,
-          description: `${metadata.description}\n\n${metadata.hashtags.join(" ")}`,
-          tags: metadata.tags,
+          title: metadataForUpload.youtubeTitle,
+          description: `${metadataForUpload.description}\n\n${metadataForUpload.hashtags.join(" ")}`,
+          tags: metadataForUpload.tags,
           publishAt: payload.publishAt,
         }),
       });
@@ -331,10 +382,94 @@ export default function DashboardPage() {
       const note = output.scheduleNote ? ` ${output.scheduleNote}` : "";
 
       setMessage(`${label}${target}${note}`);
+      return completed;
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "YouTube upload failed");
+      return null;
     } finally {
       setIsYoutubeStarting(false);
+    }
+  };
+
+  const runAutopilot = async () => {
+    if (isAutopilotRunning) {
+      return;
+    }
+
+    setIsAutopilotRunning(true);
+    setError(null);
+    setMessage("Autopilot started.");
+
+    try {
+      const fetchedTrends = await runTrends();
+      const trendForPipeline = fetchedTrends?.[0] ?? null;
+
+      if (!trendForPipeline) {
+        setActiveStep(1);
+        setMessage("Autopilot stopped: no trends were found.");
+        return;
+      }
+
+      const generatedIdeas = await runIdeas(trendForPipeline);
+      const ideaForPipeline = generatedIdeas?.[0] ?? null;
+
+      if (!ideaForPipeline) {
+        setActiveStep(2);
+        setMessage("Autopilot stopped: no ideas were generated.");
+        return;
+      }
+
+      if (assets.length === 0) {
+        setActiveStep(3);
+        setMessage("Autopilot paused at Upload media. Add at least one asset to continue.");
+        return;
+      }
+
+      setMessage("Autopilot running render...");
+      const renderJobId = await startRenderJob({
+        idea: ideaForPipeline,
+        mediaAssetIds: assets.map((asset) => asset.id),
+        preference: "auto",
+      });
+
+      const completedRender = await waitForJob(renderJobId, "render");
+      setLatestRenderJob(completedRender);
+
+      const metadataResult = await generateMetadataAndSchedule({
+        trend: trendForPipeline,
+        idea: ideaForPipeline,
+        advanceStep: false,
+      });
+
+      if (!metadataResult) {
+        setActiveStep(5);
+        return;
+      }
+
+      const defaultVariantId = completedRender.renders?.[0]?.id;
+      if (!defaultVariantId) {
+        setActiveStep(6);
+        setMessage("Autopilot completed through metadata. No render variant available to upload.");
+        return;
+      }
+
+      const youtubeJob = await startYoutubeUpload({
+        renderId: defaultVariantId,
+        publishAt: metadataResult.schedule.publishAt,
+        metadataOverride: metadataResult.metadata,
+      });
+
+      if (!youtubeJob) {
+        setActiveStep(6);
+        return;
+      }
+
+      setActiveStep(6);
+      setMessage("Autopilot completed all available steps.");
+    } catch (autopilotError) {
+      setError(autopilotError instanceof Error ? autopilotError.message : "Autopilot failed");
+    } finally {
+      setIsAutopilotRunning(false);
     }
   };
 
@@ -343,46 +478,71 @@ export default function DashboardPage() {
       case 0:
         return (
           <section className="space-y-3">
-            <p className="text-sm text-slate-700">
+            <p className="text-sm text-[var(--cp-muted)]">
               Fetch RSS feeds, cluster stories into up to 3 trend groups, then continue to idea generation.
             </p>
-            <button
-              type="button"
-              onClick={runTrends}
-              className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white"
-            >
-              Fetch trends
-            </button>
-            <p className="text-xs text-slate-500">Sources configured: {profile?.sources.length ?? 0}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                onClick={runAutopilot}
+                disabled={isAutopilotRunning || isYoutubeStarting || isMetadataLoading}
+                className="bg-[var(--cp-deep)] text-white hover:bg-[var(--cp-deep)]/90"
+              >
+                {isAutopilotRunning ? "Executing..." : "Execute pipeline (auto)"}
+              </Button>
+              <Button
+                type="button"
+                onClick={runTrends}
+                className="text-white"
+              >
+                Fetch trends
+              </Button>
+            </div>
+            <p className="text-xs text-[var(--cp-muted-dim)]">
+              Autopilot uses top-ranked trend and idea by default, then pauses if media is missing.
+            </p>
+            <p className="text-xs text-[var(--cp-muted-dim)]">Sources configured: {profile?.sources.length ?? 0}</p>
           </section>
         );
       case 1:
         return (
           <section className="space-y-3">
             <TrendPicker trends={trends} selectedIndex={selectedTrendIndex} onSelect={setSelectedTrendIndex} />
-            <button
+            <Button
               type="button"
               onClick={() => setActiveStep(2)}
               disabled={trends.length === 0}
-              className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium disabled:opacity-50"
+              variant="outline"
+              className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
             >
               Continue to ideas
-            </button>
+            </Button>
           </section>
         );
       case 2:
         return (
           <section className="space-y-3">
-            <p className="text-sm text-slate-700">Generate three creator-ready ideas from the selected trend.</p>
-            <button
+            <p className="text-sm text-[var(--cp-muted)]">Generate three creator-ready ideas from the selected trend.</p>
+            <Button
               type="button"
-              onClick={runIdeas}
+              onClick={() => {
+                void runIdeas();
+              }}
               disabled={!selectedTrend}
-              className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              className="text-white"
             >
               Generate ideas
-            </button>
+            </Button>
             <IdeaCards ideas={ideas} selectedIndex={selectedIdeaIndex} onSelect={setSelectedIdeaIndex} />
+            <Button
+              type="button"
+              onClick={() => setActiveStep(3)}
+              disabled={!selectedIdea || ideas.length === 0}
+              variant="outline"
+              className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
+            >
+              Continue to media
+            </Button>
           </section>
         );
       case 3:
@@ -395,14 +555,15 @@ export default function DashboardPage() {
                 setMessage(`Uploaded ${uploadedAssets.length} media assets.`);
               }}
             />
-            <button
+            <Button
               type="button"
               onClick={() => setActiveStep(4)}
-              disabled={assets.length === 0}
-              className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium disabled:opacity-50"
+              disabled={assets.length === 0 || !selectedIdea}
+              variant="outline"
+              className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
             >
               Continue to render
-            </button>
+            </Button>
           </section>
         );
       case 4:
@@ -410,7 +571,7 @@ export default function DashboardPage() {
           <section className="space-y-3">
             <RenderPanel idea={selectedIdea} assets={assets} onJobCreated={handleRenderJobCreated} />
             {latestRenderJob?.status === "complete" ? (
-              <p className="text-sm text-emerald-700">Last render complete. You can proceed to metadata.</p>
+              <p className="text-sm text-[var(--cp-success)]">Last render complete. You can proceed to metadata.</p>
             ) : null}
           </section>
         );
@@ -453,21 +614,34 @@ export default function DashboardPage() {
   return (
     <main className="mx-auto min-h-screen max-w-7xl p-6">
       <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Creator Pilot Dashboard</h1>
-          <p className="text-sm text-slate-600">
-            End-to-end pipeline: trends → ideas → media → render → metadata → schedule → YouTube upload.
-          </p>
+        <div className="space-y-2">
+          <BrandLogo href="/dashboard" />
+          <div>
+            <h1 className="text-2xl font-bold text-[var(--cp-ink)]">Creator Pilot Dashboard</h1>
+            <p className="text-sm text-[var(--cp-muted-soft)]">
+              End-to-end pipeline: trends → ideas → media → render → metadata → schedule → YouTube upload.
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-3">
-          <Link href="/onboarding" className="text-sm font-medium text-blue-700 underline">
+          <Button
+            type="button"
+            onClick={runAutopilot}
+            disabled={isAutopilotRunning || isYoutubeStarting || isMetadataLoading}
+            className="bg-[var(--cp-deep)] text-white hover:bg-[var(--cp-deep)]/90"
+          >
+            {isAutopilotRunning ? "Executing..." : "Execute pipeline"}
+          </Button>
+          <Link href="/onboarding" className="text-sm font-medium text-[var(--cp-link)] underline">
             Edit onboarding
           </Link>
           {activeJob ? (
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
-              <span className="mr-2 font-medium text-slate-700">Job {activeJob.type}</span>
-              <JobStatusBadge status={activeJob.status} />
-            </div>
+            <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 ring-0">
+              <CardContent className="px-3 py-2 text-xs">
+                <span className="mr-2 font-medium text-[var(--cp-muted)]">Job {activeJob.type}</span>
+                <JobStatusBadge status={activeJob.status} />
+              </CardContent>
+            </Card>
           ) : null}
         </div>
       </header>
@@ -475,21 +649,47 @@ export default function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-[260px_1fr]">
         <StepSidebar steps={STEPS} activeStep={activeStep} onSelect={setActiveStep} />
 
-        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          {message ? <p className="mb-3 rounded-md bg-emerald-50 p-2 text-sm text-emerald-700">{message}</p> : null}
-          {error ? <p className="mb-3 rounded-md bg-rose-50 p-2 text-sm text-rose-700">{error}</p> : null}
-          {renderStepContent()}
+        <Card className="border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 shadow-sm ring-0">
+          <CardContent className="p-4">
+            {message ? <p className="mb-3 rounded-md bg-[var(--cp-success-bg)] p-2 text-sm text-[var(--cp-success)]">{message}</p> : null}
+            {error ? <p className="mb-3 rounded-md bg-[var(--cp-error-bg)] p-2 text-sm text-[var(--cp-error)]">{error}</p> : null}
+            {renderStepContent()}
 
-          {latestYoutubeJob ? (
-            <section className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <p className="text-sm font-semibold text-slate-900">Last YouTube upload job</p>
-              <p className="text-xs text-slate-700">Status: {latestYoutubeJob.status}</p>
-              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-xs text-slate-700">
-                {JSON.stringify(latestYoutubeJob.outputJson, null, 2)}
-              </pre>
-            </section>
-          ) : null}
-        </section>
+            {latestYoutubeJob ? (
+              <Card className="mt-6 border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+                <CardContent className="p-3">
+                  <p className="text-sm font-semibold text-[var(--cp-ink)]">Last YouTube upload job</p>
+                  <p className="text-xs text-[var(--cp-muted)]">Status: {latestYoutubeJob.status}</p>
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-[var(--cp-surface)] p-2 text-xs text-[var(--cp-muted)]">
+                    {JSON.stringify(latestYoutubeJob.outputJson, null, 2)}
+                  </pre>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {jobHistory.length > 0 ? (
+              <Card className="mt-6 border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+                <CardContent className="p-3">
+                  <p className="text-sm font-semibold text-[var(--cp-ink)]">Recent run history</p>
+                  <ul className="mt-2 space-y-2">
+                    {jobHistory.map((job) => (
+                      <li key={job.id} className="flex flex-wrap items-center justify-between gap-2 rounded bg-[var(--cp-surface)] px-2 py-1">
+                        <div className="flex items-center gap-2 text-xs text-[var(--cp-muted)]">
+                          <span className="font-medium">{job.type}</span>
+                          <JobStatusBadge status={job.status} />
+                          <span>{job.createdAt ? new Date(job.createdAt).toLocaleString() : "Unknown time"}</span>
+                        </div>
+                        <Link href={`/jobs/${job.id}`} className="text-xs font-medium text-[var(--cp-link)] underline">
+                          Open job
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            ) : null}
+          </CardContent>
+        </Card>
       </div>
     </main>
   );

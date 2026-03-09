@@ -1,7 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+
+import { BrandLogo } from "@/components/BrandLogo";
 
 type JobResponse = {
   job: {
@@ -55,14 +58,22 @@ export default function JobDetailPage() {
 
   return (
     <main className="mx-auto min-h-screen max-w-4xl p-6">
-      <h1 className="mb-4 text-2xl font-bold text-slate-900">Job {params.id}</h1>
+      <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-2">
+          <BrandLogo href="/dashboard" />
+          <h1 className="text-2xl font-bold text-[var(--cp-ink)]">Job {params.id}</h1>
+        </div>
+        <Link href="/dashboard" className="text-sm font-medium text-[var(--cp-link)] underline">
+          Back to dashboard
+        </Link>
+      </header>
 
-      {error ? <p className="rounded bg-rose-50 p-2 text-sm text-rose-700">{error}</p> : null}
-      {!data ? <p className="text-sm text-slate-600">Loading job status...</p> : null}
+      {error ? <p className="rounded bg-[var(--cp-error-bg)] p-2 text-sm text-[var(--cp-error)]">{error}</p> : null}
+      {!data ? <p className="text-sm text-[var(--cp-muted-soft)]">Loading job status...</p> : null}
 
       {data ? (
-        <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
-          <div className="grid gap-2 text-sm text-slate-700 md:grid-cols-2">
+        <section className="space-y-4 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] p-4">
+          <div className="grid gap-2 text-sm text-[var(--cp-muted)] md:grid-cols-2">
             <p>
               <strong>Type:</strong> {data.job.type}
             </p>
@@ -78,15 +89,15 @@ export default function JobDetailPage() {
           </div>
 
           <div>
-            <h2 className="text-sm font-semibold text-slate-900">Logs</h2>
-            <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+            <h2 className="text-sm font-semibold text-[var(--cp-ink)]">Logs</h2>
+            <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-2 text-xs text-[var(--cp-muted)]">
               {(data.job.logs ?? []).join("\n") || "No logs yet"}
             </pre>
           </div>
 
           <div>
-            <h2 className="text-sm font-semibold text-slate-900">Output</h2>
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+            <h2 className="text-sm font-semibold text-[var(--cp-ink)]">Output</h2>
+            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-2 text-xs text-[var(--cp-muted)]">
               {JSON.stringify(data.job.outputJson, null, 2)}
             </pre>
           </div>

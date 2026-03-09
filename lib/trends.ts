@@ -1,6 +1,6 @@
 import { llmChatJSON } from "@/lib/llm";
 import type { RssEntry } from "@/lib/rss";
-import type { Trend } from "@/lib/types";
+import type { Trend, TrendSourceLink } from "@/lib/types";
 
 const STOP_WORDS = new Set([
   "the",
@@ -73,6 +73,14 @@ function mergeSets(target: Set<string>, source: Set<string>) {
   }
 }
 
+function sourceLabel(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 function summarizeCluster(cluster: Cluster): Trend {
   const frequency = new Map<string, number>();
 
@@ -88,20 +96,48 @@ function summarizeCluster(cluster: Cluster): Trend {
     .map(([word]) => word)
     .join(" ");
 
+  const sourceLinks: TrendSourceLink[] = cluster.entries.slice(0, 5).map((entry) => ({
+    url: entry.link,
+    sourceUrl: entry.sourceUrl,
+    title: entry.title.slice(0, 180),
+    publishedAt: entry.publishedAt,
+  }));
+
   const topTitles = cluster.entries.slice(0, 3).map((entry) => entry.title);
-  const links = cluster.entries.slice(0, 5).map((entry) => entry.link);
+  const links = sourceLinks.map((entry) => entry.url);
+  const sourceCount = new Set(cluster.entries.map((entry) => sourceLabel(entry.sourceUrl))).size;
+
+  const normalizedVolume = Math.min(1, cluster.entries.length / 12);
+  const normalizedSourceDiversity = Math.min(1, sourceCount / 5);
+  const popularityScore = Math.round((normalizedVolume * 0.7 + normalizedSourceDiversity * 0.3) * 100);
 
   return {
     trendTitle: keywordHeadline ? keywordHeadline.replace(/\b\w/g, (c) => c.toUpperCase()) : topTitles[0],
-    summary: topTitles.join(" | "),
+    summary: topTitles.slice(0, 2).join(" | "),
     links,
+    popularityScore,
+    sourceCount,
+    itemCount: cluster.entries.length,
+    sourceLinks,
   };
 }
 
 async function polishTrendWithLlm(trend: Trend) {
   const llmResult = await llmChatJSON<{ trendTitle: string; summary: string }>({
-    system: "You create concise news trend labels for creators.",
-    user: `Rewrite this trend in clean creator-friendly language:\n${JSON.stringify(trend)}`,
+    system:
+      "You create concise, coherent trend labels for creators. Never merge unrelated stories and avoid clickbait wording.",
+    user: JSON.stringify({
+      trendTitle: trend.trendTitle,
+      summary: trend.summary,
+      topLinks: (trend.sourceLinks ?? []).map((entry) => ({
+        source: sourceLabel(entry.sourceUrl),
+        title: entry.title,
+      })),
+      outputSchema: {
+        trendTitle: "short, specific phrase under 12 words",
+        summary: "single sentence under 220 chars focused on one coherent trend",
+      },
+    }),
     temperature: 0.3,
   });
 
@@ -136,12 +172,17 @@ export async function clusterEntriesIntoTrends(entries: RssEntry[], maxTrends = 
     }
 
     const shouldCreateCluster = clusters.length < maxTrends && bestScore < 0.22;
+    const shouldDropAsNoise = clusters.length >= maxTrends && bestScore < 0.08;
 
     if (bestClusterIndex === -1 || shouldCreateCluster) {
       clusters.push({
         entries: [entry],
         keywordUnion: new Set(entryKeywords),
       });
+      continue;
+    }
+
+    if (shouldDropAsNoise) {
       continue;
     }
 

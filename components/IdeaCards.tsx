@@ -1,5 +1,7 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import type { Idea } from "@/lib/types";
 
 type IdeaCardsProps = {
@@ -10,7 +12,7 @@ type IdeaCardsProps = {
 
 export function IdeaCards({ ideas, selectedIndex, onSelect }: IdeaCardsProps) {
   if (ideas.length === 0) {
-    return <p className="text-sm text-slate-600">No ideas yet. Select a trend and run Generate ideas.</p>;
+    return <p className="text-sm text-[var(--cp-muted-soft)]">No ideas yet. Select a trend and run Generate ideas.</p>;
   }
 
   return (
@@ -18,26 +20,30 @@ export function IdeaCards({ ideas, selectedIndex, onSelect }: IdeaCardsProps) {
       {ideas.map((idea, index) => {
         const selected = selectedIndex === index;
         return (
-          <article
+          <Card
             key={`${idea.videoTitle}-${index}`}
-            className={`rounded-lg border p-3 ${selected ? "border-blue-500 bg-blue-50" : "border-slate-200 bg-white"}`}
+            className={`py-0 ring-0 ${selected ? "border-[var(--cp-primary)] bg-[var(--cp-highlight)]" : "border-[var(--cp-border)] bg-[var(--cp-surface)]"}`}
           >
-            <h3 className="text-sm font-semibold text-slate-900">{idea.videoTitle}</h3>
-            <p className="mt-1 text-xs text-slate-700">{idea.hook}</p>
-            <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-slate-700">
-              {idea.bulletOutline.map((bullet) => (
-                <li key={bullet}>{bullet}</li>
-              ))}
-            </ul>
-            <p className="mt-2 text-xs text-slate-600">CTA: {idea.cta}</p>
-            <button
-              type="button"
-              onClick={() => onSelect(index)}
-              className="mt-3 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100"
-            >
-              {selected ? "Selected" : "Select"}
-            </button>
-          </article>
+            <CardContent className="p-3">
+              <h3 className="text-sm font-semibold text-[var(--cp-ink)]">{idea.videoTitle}</h3>
+              <p className="mt-1 text-xs text-[var(--cp-muted)]">{idea.hook}</p>
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-[var(--cp-muted)]">
+                {idea.bulletOutline.map((bullet) => (
+                  <li key={bullet}>{bullet}</li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-[var(--cp-muted-soft)]">CTA: {idea.cta}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => onSelect(index)}
+                className="mt-3 border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-xs hover:bg-[var(--cp-surface-muted)]"
+              >
+                {selected ? "Selected" : "Select"}
+              </Button>
+            </CardContent>
+          </Card>
         );
       })}
     </div>

@@ -2,6 +2,10 @@
 
 import { useMemo, useState } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Idea, RenderPreference } from "@/lib/types";
 
 type MediaAsset = {
@@ -77,51 +81,57 @@ export function RenderPanel({ idea, assets, onJobCreated }: RenderPanelProps) {
   return (
     <div className="space-y-4">
       <div>
-        <label htmlFor="format-pref" className="mb-1 block text-sm font-medium text-slate-900">
+        <Label htmlFor="format-pref" className="mb-1 block text-[var(--cp-ink)]">
           Format preference
-        </label>
-        <select
-          id="format-pref"
+        </Label>
+        <Select
           value={preference}
-          onChange={(event) => setPreference(event.target.value as RenderPreference)}
-          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+          onValueChange={(value) => setPreference(value as RenderPreference)}
         >
-          <option value="auto">Auto (recommended)</option>
-          <option value="shorts">Shorts 1080x1920</option>
-          <option value="landscape">Landscape 1920x1080</option>
-        </select>
-        <p className="mt-1 text-xs text-slate-500">Auto picks format based on source orientation + duration.</p>
+          <SelectTrigger id="format-pref" className="w-full border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-sm text-[var(--cp-ink-soft)]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">Auto (recommended)</SelectItem>
+            <SelectItem value="shorts">Shorts 1080x1920</SelectItem>
+            <SelectItem value="landscape">Landscape 1920x1080</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="mt-1 text-xs text-[var(--cp-muted-dim)]">Auto picks format based on source orientation + duration.</p>
       </div>
 
       <div>
-        <p className="mb-1 text-sm font-medium text-slate-900">Select media assets</p>
+        <p className="mb-1 text-sm font-medium text-[var(--cp-ink)]">Select media assets</p>
         <div className="grid gap-2 md:grid-cols-2">
           {assets.map((asset) => {
             const checked = effectiveSelected.includes(asset.id);
+            const inputId = `asset-${asset.id}`;
             return (
-              <label key={asset.id} className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 text-xs">
-                <input
-                  type="checkbox"
+              <div key={asset.id} className="flex items-center gap-2 rounded border border-[var(--cp-border)] px-2 py-1 text-xs">
+                <Checkbox
+                  id={inputId}
                   checked={checked}
-                  onChange={() => toggleAsset(asset.id)}
-                  className="h-3 w-3"
+                  onCheckedChange={() => toggleAsset(asset.id)}
+                  className="border-[var(--cp-border-strong)]"
                 />
-                <span className="truncate">{asset.path}</span>
-              </label>
+                <Label htmlFor={inputId} className="truncate text-xs font-normal text-[var(--cp-muted)]">
+                  {asset.path}
+                </Label>
+              </div>
             );
           })}
         </div>
       </div>
 
-      <button
+      <Button
         type="button"
         onClick={handleRender}
         disabled={isSubmitting || !idea || assets.length === 0}
-        className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="text-white"
       >
         {isSubmitting ? "Starting render..." : "Render 3 variants"}
-      </button>
-      {error ? <p className="text-xs text-rose-600">{error}</p> : null}
+      </Button>
+      {error ? <p className="text-xs text-[var(--cp-error)]">{error}</p> : null}
     </div>
   );
 }

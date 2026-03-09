@@ -1,12 +1,17 @@
+import { Badge } from "@/components/ui/badge";
 import type { JobStatus } from "@/lib/types";
 
 const STYLE_MAP: Record<JobStatus, string> = {
-  queued: "bg-slate-100 text-slate-700",
-  running: "bg-amber-100 text-amber-800",
-  complete: "bg-emerald-100 text-emerald-800",
-  failed: "bg-rose-100 text-rose-800",
+  queued: "border-transparent bg-[var(--cp-surface-muted)] text-[var(--cp-muted)]",
+  running: "border-transparent bg-[var(--cp-warning-bg)] text-[var(--cp-warning-strong)]",
+  complete: "border-transparent bg-[var(--cp-success-bg)] text-[var(--cp-success-strong)]",
+  failed: "border-transparent bg-[var(--cp-error-bg)] text-[var(--cp-error-strong)]",
 };
 
 export function JobStatusBadge({ status }: { status: JobStatus }) {
-  return <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${STYLE_MAP[status]}`}>{status}</span>;
+  return (
+    <Badge variant="outline" className={STYLE_MAP[status]}>
+      {status}
+    </Badge>
+  );
 }

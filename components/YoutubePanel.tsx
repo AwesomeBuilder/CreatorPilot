@@ -2,6 +2,12 @@
 
 import { useMemo, useState } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
 type YoutubeStatus = {
   connected: boolean;
   mode: "mock" | "live";
@@ -58,57 +64,74 @@ export function YoutubePanel({
 
   return (
     <div className="space-y-4">
-      <section className="rounded-lg border border-slate-200 p-3">
-        <p className="text-sm font-semibold text-slate-900">YouTube connection</p>
-        <p className="text-xs text-slate-700">
-          Mode: <strong>{status?.mode ?? "unknown"}</strong> - {status?.reason ?? "Status unavailable"}
-        </p>
-        <button
-          type="button"
-          onClick={onConnect}
-          className="mt-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium hover:bg-slate-100"
-        >
-          Connect YouTube
-        </button>
-      </section>
+      <Card className="border-[var(--cp-border)] py-0 ring-0">
+        <CardContent className="p-3">
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">YouTube connection</p>
+          <p className="text-xs text-[var(--cp-muted)]">
+            Mode: <strong>{status?.mode ?? "unknown"}</strong> - {status?.reason ?? "Status unavailable"}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onConnect}
+            className="mt-2 border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
+          >
+            Connect YouTube
+          </Button>
+        </CardContent>
+      </Card>
 
-      <section className="rounded-lg border border-slate-200 p-3">
-        <p className="text-sm font-semibold text-slate-900">Upload render</p>
-        <label className="mb-1 mt-2 block text-xs font-medium text-slate-700">Variant</label>
-        <select
-          value={effectiveRenderId}
-          onChange={(event) => setSelectedRenderId(event.target.value)}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-        >
-          {variants.map((variant) => (
-            <option key={variant.id} value={variant.id}>
-              {variant.label}
-            </option>
-          ))}
-        </select>
+      <Card className="border-[var(--cp-border)] py-0 ring-0">
+        <CardContent className="p-3">
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">Upload render</p>
+          <Label htmlFor="variant-select" className="mb-1 mt-2 block text-xs font-medium text-[var(--cp-muted)]">
+            Variant
+          </Label>
+          <Select
+            value={effectiveRenderId}
+            onValueChange={setSelectedRenderId}
+          >
+            <SelectTrigger
+              id="variant-select"
+              className="w-full border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-sm text-[var(--cp-ink-soft)]"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {variants.map((variant) => (
+                <SelectItem key={variant.id} value={variant.id}>
+                  {variant.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-        <label className="mt-3 flex items-center gap-2 text-xs text-slate-700">
-          <input
-            type="checkbox"
-            checked={useSchedule}
-            onChange={(event) => setUseSchedule(event.target.checked)}
-            disabled={!schedule}
-          />
-          Apply recommended schedule (best effort)
-        </label>
-        {!status || status.mode === "mock" ? (
-          <p className="mt-2 text-xs text-amber-700">Currently in mock mode. Upload call will be simulated.</p>
-        ) : null}
+          <div className="mt-3 flex items-center gap-2 text-xs text-[var(--cp-muted)]">
+            <Checkbox
+              id="apply-schedule"
+              checked={useSchedule}
+              onCheckedChange={(checked) => setUseSchedule(checked === true)}
+              disabled={!schedule}
+              className="border-[var(--cp-border-strong)]"
+            />
+            <Label htmlFor="apply-schedule" className="text-xs font-normal text-[var(--cp-muted)]">
+              Apply recommended schedule (best effort)
+            </Label>
+          </div>
+          {!status || status.mode === "mock" ? (
+            <p className="mt-2 text-xs text-[var(--cp-warning)]">Currently in mock mode. Upload call will be simulated.</p>
+          ) : null}
 
-        <button
-          type="button"
-          disabled={!canUpload || isUploading}
-          onClick={() => onUpload({ renderId: effectiveRenderId, publishAt: useSchedule ? schedule?.publishAt : undefined })}
-          className="mt-3 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-        >
-          {isUploading ? "Starting upload..." : "Upload to YouTube (private)"}
-        </button>
-      </section>
+          <Button
+            type="button"
+            disabled={!canUpload || isUploading}
+            onClick={() => onUpload({ renderId: effectiveRenderId, publishAt: useSchedule ? schedule?.publishAt : undefined })}
+            className="mt-3 text-white"
+          >
+            {isUploading ? "Starting upload..." : "Upload to YouTube (private)"}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }
