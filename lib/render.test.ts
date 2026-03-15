@@ -19,6 +19,7 @@ describe("render helpers", () => {
     expect(renderTestUtils.pickFormat("auto", { width: 1080, height: 1920, duration: 300 }).format).toBe("shorts");
     expect(renderTestUtils.pickFormat("auto", { width: 1920, height: 1080, duration: 60 }).format).toBe("shorts");
     expect(renderTestUtils.pickFormat("auto", { width: 1920, height: 1080, duration: 180 }).format).toBe("landscape");
+    expect(renderTestUtils.pickFormat("auto", { width: 1920, height: 1080, duration: 0 }).format).toBe("landscape");
   });
 
   it("wraps overlay text and adds an ellipsis when content overflows", () => {

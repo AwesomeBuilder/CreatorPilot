@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { Idea, RenderPreference } from "@/lib/types";
+import type { Idea, MediaRelevanceAssessment, RenderPreference } from "@/lib/types";
 
 type MediaAsset = {
   id: string;
@@ -25,6 +25,9 @@ export function RenderPanel({ idea, assets, onJobCreated }: RenderPanelProps) {
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [assessment, setAssessment] = useState<MediaRelevanceAssessment | null>(null);
+  const [isAssessing, setIsAssessing] = useState(false);
+  const [allowIrrelevantMedia, setAllowIrrelevantMedia] = useState(false);
 
   const effectiveSelected = useMemo(() => {
     if (selectedAssetIds.length > 0) {
@@ -39,6 +42,57 @@ export function RenderPanel({ idea, assets, onJobCreated }: RenderPanelProps) {
       current.includes(assetId) ? current.filter((id) => id !== assetId) : [...current, assetId],
     );
   };
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const runAssessment = async () => {
+      if (!idea || effectiveSelected.length === 0) {
+        setAssessment(null);
+        setAllowIrrelevantMedia(false);
+        return;
+      }
+
+      setIsAssessing(true);
+
+      try {
+        const response = await fetch("/api/media/relevance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idea,
+            mediaAssetIds: effectiveSelected,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error ?? "Failed to assess uploaded media");
+        }
+
+        if (!isCancelled) {
+          setAssessment(data.assessment ?? null);
+          if (!data.assessment?.shouldBlock) {
+            setAllowIrrelevantMedia(false);
+          }
+        }
+      } catch {
+        if (!isCancelled) {
+          setAssessment(null);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsAssessing(false);
+        }
+      }
+    };
+
+    void runAssessment();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [effectiveSelected, idea]);
 
   const handleRender = async () => {
     if (!idea) {
@@ -62,6 +116,7 @@ export function RenderPanel({ idea, assets, onJobCreated }: RenderPanelProps) {
           idea,
           mediaAssetIds: effectiveSelected,
           preference,
+          allowIrrelevantMedia,
         }),
       });
 
@@ -123,10 +178,41 @@ export function RenderPanel({ idea, assets, onJobCreated }: RenderPanelProps) {
         </div>
       </div>
 
+      {isAssessing ? <p className="text-xs text-[var(--cp-muted)]">Checking whether the uploaded media fits this idea...</p> : null}
+      {assessment ? (
+        <div
+          className={`rounded border px-3 py-2 text-xs ${
+            assessment.shouldBlock
+              ? "border-[var(--cp-warning)] bg-[var(--cp-warning-bg)] text-[var(--cp-warning)]"
+              : assessment.status === "relevant"
+                ? "border-[var(--cp-success)] bg-[var(--cp-success-bg)] text-[var(--cp-success)]"
+                : "border-[var(--cp-border)] bg-[var(--cp-surface-soft)] text-[var(--cp-muted)]"
+          }`}
+        >
+          <p>{assessment.summary}</p>
+          {assessment.matchedSignals.length > 0 ? (
+            <p className="mt-1 text-[11px] opacity-80">Signals: {assessment.matchedSignals.join(", ")}</p>
+          ) : null}
+        </div>
+      ) : null}
+      {assessment?.shouldBlock ? (
+        <div className="flex items-center gap-2 text-xs text-[var(--cp-muted)]">
+          <Checkbox
+            id="allow-irrelevant-media"
+            checked={allowIrrelevantMedia}
+            onCheckedChange={(checked) => setAllowIrrelevantMedia(checked === true)}
+            className="border-[var(--cp-border-strong)]"
+          />
+          <Label htmlFor="allow-irrelevant-media" className="text-xs font-normal text-[var(--cp-muted)]">
+            Render anyway with the current media
+          </Label>
+        </div>
+      ) : null}
+
       <Button
         type="button"
         onClick={handleRender}
-        disabled={isSubmitting || !idea || assets.length === 0}
+        disabled={isSubmitting || !idea || assets.length === 0 || (assessment?.shouldBlock === true && !allowIrrelevantMedia)}
         className="text-white"
       >
         {isSubmitting ? "Starting render..." : "Render 3 variants"}

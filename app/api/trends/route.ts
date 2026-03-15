@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
-import { getCuratedSourcesForNiche } from "@/lib/default-sources";
+import { areSameSourceSets, findMatchingCuratedPreset, getCuratedSourcesForNiche } from "@/lib/default-sources";
 import { createJob, runJobInBackground } from "@/lib/jobs";
 import { fetchRssEntries } from "@/lib/rss";
 import { clusterEntriesIntoTrends } from "@/lib/trends";
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   runJobInBackground(job.id, async ({ log }) => {
     await log("Loading enabled RSS sources.");
 
-    const enabledSources = await prisma.source.findMany({
+    let enabledSources = await prisma.source.findMany({
       where: {
         userId: user.id,
         enabled: true,
@@ -39,17 +39,44 @@ export async function POST(req: Request) {
           isCurated: true,
         })),
       });
+      enabledSources = await prisma.source.findMany({
+        where: {
+          userId: user.id,
+          enabled: true,
+        },
+      });
     }
 
-    const refreshedSources = await prisma.source.findMany({
-      where: {
-        userId: user.id,
-        enabled: true,
-      },
-    });
+    const targetCurated = getCuratedSourcesForNiche(user.niche);
+    const presetMatch = findMatchingCuratedPreset(enabledSources.map((source) => source.url));
+    let sourceSyncNote: string | null = null;
 
-    await log(`Fetching RSS entries from ${refreshedSources.length} sources.`);
-    const entries = await fetchRssEntries(refreshedSources.map((source) => source.url));
+    if (presetMatch && !areSameSourceSets(enabledSources.map((source) => source.url), targetCurated)) {
+      await log(`Detected stale curated feeds from ${presetMatch}. Syncing to ${user.niche ?? "General / Mixed"}.`);
+      await prisma.$transaction([
+        prisma.source.deleteMany({ where: { userId: user.id } }),
+        prisma.source.createMany({
+          data: targetCurated.map((url) => ({
+            userId: user.id,
+            url,
+            enabled: true,
+            isCurated: true,
+          })),
+        }),
+      ]);
+
+      enabledSources = await prisma.source.findMany({
+        where: {
+          userId: user.id,
+          enabled: true,
+        },
+      });
+
+      sourceSyncNote = `Curated feeds were refreshed to match ${user.niche ?? "General / Mixed"}.`;
+    }
+
+    await log(`Fetching RSS entries from ${enabledSources.length} sources.`);
+    const entries = await fetchRssEntries(enabledSources.map((source) => source.url));
 
     if (entries.length === 0) {
       await log("No entries found from RSS feeds.");
@@ -57,13 +84,14 @@ export async function POST(req: Request) {
     }
 
     await log(`Fetched ${entries.length} entries. Clustering into trends.`);
-    const trends = await clusterEntriesIntoTrends(entries, 3);
+    const trends = await clusterEntriesIntoTrends(entries, 5, user.niche);
 
     await log(`Generated ${trends.length} trends.`);
     return {
       trends,
-      sourceCount: refreshedSources.length,
+      sourceCount: enabledSources.length,
       entryCount: entries.length,
+      sourceSyncNote,
     };
   });
 

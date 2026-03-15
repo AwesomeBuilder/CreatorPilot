@@ -1,4 +1,5 @@
 export type JobStatus = "queued" | "running" | "complete" | "failed";
+export type TrendFitLabel = "Direct fit" | "Adjacent angle" | "Broad news" | "Open feed";
 
 export type TrendSourceLink = {
   url: string;
@@ -15,6 +16,8 @@ export type Trend = {
   sourceCount?: number;
   itemCount?: number;
   sourceLinks?: TrendSourceLink[];
+  fitLabel?: TrendFitLabel;
+  fitReason?: string;
 };
 
 export type Idea = {
@@ -40,6 +43,16 @@ export type ScheduleRecommendation = {
 
 export type RenderFormat = "shorts" | "landscape";
 export type RenderPreference = RenderFormat | "auto";
+
+export type MediaRelevanceStatus = "relevant" | "unclear" | "irrelevant";
+
+export type MediaRelevanceAssessment = {
+  status: MediaRelevanceStatus;
+  confidence: number;
+  summary: string;
+  matchedSignals: string[];
+  shouldBlock: boolean;
+};
 
 export type RenderVariant = {
   variantIndex: number;

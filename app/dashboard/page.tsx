@@ -14,6 +14,7 @@ import { UploadPanel } from "@/components/UploadPanel";
 import { YoutubePanel } from "@/components/YoutubePanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { findMatchingCuratedPreset } from "@/lib/default-sources";
 import type { Idea, MetadataResult, ScheduleRecommendation, Trend } from "@/lib/types";
 
 type ProfilePayload = {
@@ -23,7 +24,7 @@ type ProfilePayload = {
     tone: string | null;
     timezone: string;
   };
-  sources: Array<{ id: string; url: string; enabled: boolean }>;
+  sources: Array<{ id: string; url: string; enabled: boolean; isCurated: boolean }>;
   youtube: {
     connected: boolean;
     mode: "mock" | "live";
@@ -90,12 +91,16 @@ export default function DashboardPage() {
 
   const selectedTrend = trends[selectedTrendIndex] ?? null;
   const selectedIdea = ideas[selectedIdeaIndex] ?? null;
+  const sourcePresetMatch = profile ? findMatchingCuratedPreset(profile.sources.map((source) => source.url)) : null;
+  const sourceMode = profile ? (profile.sources.every((source) => source.isCurated) || sourcePresetMatch ? "curated" : "custom") : null;
+  const nicheLabel = profile?.user.niche ?? "General / Mixed";
 
   const renderVariantOptions = useMemo(() => {
     return (latestRenderJob?.renders ?? []).map((render) => ({
       id: render.id,
       label: `Variant ${render.variantIndex} (${render.duration}s)`,
       path: render.path,
+      previewUrl: `/api/renders/${render.id}`,
     }));
   }, [latestRenderJob?.renders]);
 
@@ -160,8 +165,11 @@ export default function DashboardPage() {
       if (job.status === "failed") {
         rememberJob(job, type);
         setActiveJob({ id: job.id, type, status: "failed" });
+        const outputError =
+          job.outputJson && typeof job.outputJson === "object" && "error" in job.outputJson ? job.outputJson.error : null;
         const logs = Array.isArray(job.logs) ? job.logs : [];
-        throw new Error(logs.at(-1) ?? "Job failed");
+        const latestLog = logs.at(-1)?.replace(/^\d{4}-\d{2}-\d{2}T[^ ]+\s+ERROR:\s*/, "");
+        throw new Error(typeof outputError === "string" ? outputError : latestLog ?? "Job failed");
       }
 
       await sleep(1500);
@@ -183,7 +191,7 @@ export default function DashboardPage() {
       }
 
       const completed = await waitForJob(data.jobId, "trends");
-      const output = completed.outputJson as { trends?: Trend[] };
+      const output = completed.outputJson as { trends?: Trend[]; sourceCount?: number; sourceSyncNote?: string | null };
       const fetchedTrends = output?.trends ?? [];
 
       setTrends(fetchedTrends);
@@ -191,7 +199,12 @@ export default function DashboardPage() {
       setIdeas([]);
       setMetadata(null);
       setSchedule(null);
-      setMessage(`Fetched ${fetchedTrends.length} trend clusters.`);
+      void loadProfile();
+      setMessage(
+        `Fetched ${fetchedTrends.length} ranked trends from ${output?.sourceCount ?? profile?.sources.length ?? 0} sources.${
+          output?.sourceSyncNote ? ` ${output.sourceSyncNote}` : ""
+        }`,
+      );
       setActiveStep(1);
       return fetchedTrends;
     } catch (jobError) {
@@ -240,7 +253,12 @@ export default function DashboardPage() {
     }
   };
 
-  const startRenderJob = async (payload: { idea: Idea; mediaAssetIds: string[]; preference: "auto" | "shorts" | "landscape" }) => {
+  const startRenderJobWithOptions = async (payload: {
+    idea: Idea;
+    mediaAssetIds: string[];
+    preference: "auto" | "shorts" | "landscape";
+    allowIrrelevantMedia: boolean;
+  }) => {
     const response = await fetch("/api/render", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -255,6 +273,21 @@ export default function DashboardPage() {
     return data.jobId as string;
   };
 
+  const assessMediaForIdea = async (payload: { idea: Idea; mediaAssetIds: string[] }) => {
+    const response = await fetch("/api/media/relevance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error ?? "Failed to assess media relevance");
+    }
+
+    return data.assessment as { shouldBlock: boolean; summary: string };
+  };
+
   const handleRenderJobCreated = async (jobId: string) => {
     setError(null);
     setMessage("Render job started.");
@@ -262,8 +295,15 @@ export default function DashboardPage() {
     try {
       const completed = await waitForJob(jobId, "render");
       setLatestRenderJob(completed);
-      setMessage("Rendering complete. 3 variants generated.");
+      setMessage("Rendering complete. Generating metadata and schedule...");
       setActiveStep(5);
+      const metadataResult = await generateMetadataAndSchedule({ advanceStep: true });
+      if (!metadataResult) {
+        setMessage("Rendering complete. Metadata generation needs attention.");
+        return;
+      }
+
+      setMessage("Rendering, metadata, and schedule generation complete.");
     } catch (jobError) {
       setError(jobError instanceof Error ? jobError.message : "Render job failed");
     }
@@ -421,20 +461,34 @@ export default function DashboardPage() {
 
       if (assets.length === 0) {
         setActiveStep(3);
-        setMessage("Autopilot paused at Upload media. Add at least one asset to continue.");
+        setMessage("Autopilot paused at Upload media. Trends and ideas come from your feeds and niche; uploaded media is only used at render.");
         return;
       }
 
-      setMessage("Autopilot running render...");
-      const renderJobId = await startRenderJob({
+      const mediaAssessment = await assessMediaForIdea({
+        idea: ideaForPipeline,
+        mediaAssetIds: assets.map((asset) => asset.id),
+      });
+
+      if (mediaAssessment.shouldBlock) {
+        setActiveStep(3);
+        setMessage(`Autopilot paused at Upload media. ${mediaAssessment.summary}`);
+        return;
+      }
+
+      setActiveStep(4);
+      setMessage(`Autopilot using ${assets.length} existing media asset${assets.length === 1 ? "" : "s"} and starting render...`);
+      const renderJobId = await startRenderJobWithOptions({
         idea: ideaForPipeline,
         mediaAssetIds: assets.map((asset) => asset.id),
         preference: "auto",
+        allowIrrelevantMedia: false,
       });
 
       const completedRender = await waitForJob(renderJobId, "render");
       setLatestRenderJob(completedRender);
 
+      setActiveStep(5);
       const metadataResult = await generateMetadataAndSchedule({
         trend: trendForPipeline,
         idea: ideaForPipeline,
@@ -453,6 +507,7 @@ export default function DashboardPage() {
         return;
       }
 
+      setActiveStep(6);
       const youtubeJob = await startYoutubeUpload({
         renderId: defaultVariantId,
         publishAt: metadataResult.schedule.publishAt,
@@ -479,8 +534,29 @@ export default function DashboardPage() {
         return (
           <section className="space-y-3">
             <p className="text-sm text-[var(--cp-muted)]">
-              Fetch RSS feeds, cluster stories into up to 3 trend groups, then continue to idea generation.
+              Fetch RSS feeds, rank up to 5 trend groups for your niche, then turn the selected trend into creator-ready ideas.
             </p>
+            <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+              <CardContent className="space-y-1 p-3 text-xs text-[var(--cp-muted)]">
+                <p>
+                  Niche: <span className="font-medium text-[var(--cp-ink)]">{nicheLabel}</span>
+                </p>
+                <p>
+                  Feed mode:{" "}
+                  <span className="font-medium text-[var(--cp-ink)]">
+                    {profile ? `${sourceMode === "curated" ? "Curated" : "Custom"} (${profile.sources.length} sources)` : "Loading..."}
+                  </span>
+                </p>
+                <p>Uploaded media does not influence trends or ideas. It is only used when the pipeline reaches render.</p>
+                <p>
+                  {sourceMode === "curated"
+                    ? "Curated feeds stay aligned to your selected niche."
+                    : sourceMode === "custom"
+                      ? "Custom feeds can surface broader stories; trend cards label how closely each story fits your niche."
+                      : "Loading feed settings..."}
+                </p>
+              </CardContent>
+            </Card>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -499,7 +575,7 @@ export default function DashboardPage() {
               </Button>
             </div>
             <p className="text-xs text-[var(--cp-muted-dim)]">
-              Autopilot uses top-ranked trend and idea by default, then pauses if media is missing.
+              Autopilot uses the top-ranked trend and first idea by default, then pauses if media is missing.
             </p>
             <p className="text-xs text-[var(--cp-muted-dim)]">Sources configured: {profile?.sources.length ?? 0}</p>
           </section>
@@ -523,6 +599,13 @@ export default function DashboardPage() {
         return (
           <section className="space-y-3">
             <p className="text-sm text-[var(--cp-muted)]">Generate three creator-ready ideas from the selected trend.</p>
+            {selectedTrend?.fitReason ? (
+              <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+                <CardContent className="p-3 text-xs text-[var(--cp-muted)]">
+                  <span className="font-medium text-[var(--cp-ink)]">{selectedTrend.fitLabel}:</span> {selectedTrend.fitReason}
+                </CardContent>
+              </Card>
+            ) : null}
             <Button
               type="button"
               onClick={() => {

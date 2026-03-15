@@ -35,13 +35,19 @@ export function TrendPicker({ trends, selectedIndex, onSelect }: TrendPickerProp
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold text-[var(--cp-ink)]">{trend.trendTitle}</h3>
                     <Badge variant="outline" className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-muted)]">
-                    Popularity {popularityScore}/100
+                      Trend score {popularityScore}/100
                     </Badge>
+                    {trend.fitLabel ? (
+                      <Badge variant="outline" className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-muted)]">
+                        {trend.fitLabel}
+                      </Badge>
+                    ) : null}
                   </div>
                   <p className="mt-1 text-sm text-[var(--cp-muted)]">{trend.summary}</p>
                   <p className="mt-2 text-xs text-[var(--cp-muted-dim)]">
                     Signals: {itemCount} stories from {sourceCount} sources
                   </p>
+                  {trend.fitReason ? <p className="mt-1 text-xs text-[var(--cp-muted-soft)]">{trend.fitReason}</p> : null}
                   <ul className="mt-2 space-y-1">
                     {sourceLinks.map((link) => (
                       <li key={link.url} className="text-xs text-[var(--cp-muted-soft)]">

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { findMatchingCuratedPreset, getCuratedSourcesForNiche } from "@/lib/default-sources";
 import { DEFAULT_TIMEZONE, NICHE_OPTIONS, NICHE_VALUES, TIMEZONE_OPTIONS, TIMEZONE_VALUES } from "@/lib/profile-options";
 
 type ProfileResponse = {
@@ -19,7 +20,7 @@ type ProfileResponse = {
     tone: string | null;
     timezone: string;
   };
-  sources: Array<{ url: string }>;
+  sources: Array<{ url: string; isCurated: boolean }>;
   youtube: {
     connected: boolean;
     mode: "mock" | "live";
@@ -30,6 +31,7 @@ type ProfileResponse = {
 const NICHE_VALUE_SET = new Set<string>(NICHE_VALUES);
 const TIMEZONE_VALUE_SET = new Set<string>(TIMEZONE_VALUES);
 const NICHE_EMPTY_VALUE = "__none";
+type SourceMode = "curated" | "custom";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -37,11 +39,31 @@ export default function OnboardingPage() {
   const [tone, setTone] = useState("");
   const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE);
   const [sourcesText, setSourcesText] = useState("");
+  const [sourceMode, setSourceMode] = useState<SourceMode>("curated");
   const [youtube, setYoutube] = useState<ProfileResponse["youtube"] | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const curatedSources = getCuratedSourcesForNiche(niche || null);
+
+  const switchToCuratedSources = () => {
+    setSourceMode("curated");
+  };
+
+  const switchToCustomSources = () => {
+    const currentSources = sourcesText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (currentSources.length === 0 || findMatchingCuratedPreset(currentSources)) {
+      setSourcesText(curatedSources.join("\n"));
+    }
+
+    setSourceMode("custom");
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -52,11 +74,16 @@ export default function OnboardingPage() {
 
         const loadedNiche = data.user.niche ?? "";
         const loadedTimezone = data.user.timezone ?? DEFAULT_TIMEZONE;
+        const loadedSources = data.sources.map((source) => source.url);
+        const matchesCuratedPreset = Boolean(findMatchingCuratedPreset(loadedSources));
+        const inferredMode: SourceMode =
+          data.sources.length === 0 || data.sources.every((source) => source.isCurated) || matchesCuratedPreset ? "curated" : "custom";
 
         setNiche(NICHE_VALUE_SET.has(loadedNiche) ? loadedNiche : "");
         setTone(data.user.tone ?? "");
         setTimezone(TIMEZONE_VALUE_SET.has(loadedTimezone) ? loadedTimezone : DEFAULT_TIMEZONE);
-        setSourcesText(data.sources.map((source) => source.url).join("\n"));
+        setSourcesText(loadedSources.join("\n"));
+        setSourceMode(inferredMode);
         setYoutube(data.youtube);
       } catch {
         setError("Failed to load profile");
@@ -109,7 +136,7 @@ export default function OnboardingPage() {
           niche: niche || null,
           tone: tone.trim() || null,
           timezone,
-          sources,
+          sources: sourceMode === "custom" ? sources : [],
         }),
       });
 
@@ -217,15 +244,57 @@ export default function OnboardingPage() {
               RSS sources (one per line)
             </Label>
             <p className="mt-1 text-xs font-normal text-[var(--cp-muted-soft)]">
-              Enter full RSS feed URLs, one URL per line. Leave this empty to auto-fill curated sources for your niche.
+              Curated feeds stay aligned to your niche. Custom feeds give you more control, but they can surface broader stories that the idea step then has to bridge back to your niche.
             </p>
-            <Textarea
-              id="sources-textarea"
-              className="min-h-28 border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-sm text-[var(--cp-ink-soft)]"
-              value={sourcesText}
-              onChange={(event) => setSourcesText(event.target.value)}
-              placeholder={"https://example.com/feed.xml\nhttps://another-site.com/rss"}
-            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant={sourceMode === "curated" ? "default" : "outline"}
+                className={sourceMode === "curated" ? "text-white" : "border-[var(--cp-border-strong)] bg-[var(--cp-surface)]"}
+                onClick={switchToCuratedSources}
+              >
+                Use curated feeds
+              </Button>
+              <Button
+                type="button"
+                variant={sourceMode === "custom" ? "default" : "outline"}
+                className={sourceMode === "custom" ? "text-white" : "border-[var(--cp-border-strong)] bg-[var(--cp-surface)]"}
+                onClick={switchToCustomSources}
+              >
+                Use custom RSS feeds
+              </Button>
+            </div>
+
+            {sourceMode === "curated" ? (
+              <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+                <CardContent className="space-y-2 p-3">
+                  <p className="text-sm font-medium text-[var(--cp-ink)]">
+                    Curated source pack: {niche || "General / Mixed"}
+                  </p>
+                  <p className="text-xs text-[var(--cp-muted)]">
+                    These feeds refresh automatically when you change the niche.
+                  </p>
+                  <ul className="space-y-1 text-xs text-[var(--cp-muted-soft)]">
+                    {curatedSources.map((sourceUrl) => (
+                      <li key={sourceUrl}>{sourceUrl}</li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            ) : (
+              <>
+                <Textarea
+                  id="sources-textarea"
+                  className="min-h-28 border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-sm text-[var(--cp-ink-soft)]"
+                  value={sourcesText}
+                  onChange={(event) => setSourcesText(event.target.value)}
+                  placeholder={"https://example.com/feed.xml\nhttps://another-site.com/rss"}
+                />
+                <p className="text-xs text-[var(--cp-muted-soft)]">
+                  Enter full RSS feed URLs, one URL per line. Leaving this empty falls back to curated feeds.
+                </p>
+              </>
+            )}
           </div>
 
           <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">

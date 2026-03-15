@@ -81,6 +81,9 @@ export function UploadPanel({ assets, onUploaded }: UploadPanelProps) {
               ? `${files.length} file${files.length > 1 ? "s" : ""} selected`
               : "No files selected yet. Select files to enable upload."}
           </p>
+          <p className="mt-2 text-xs text-[var(--cp-muted-dim)]">
+            Uploaded media is only used during the render step. It does not change trend selection or idea generation.
+          </p>
           <Button type="button" onClick={handleUpload} disabled={isUploading || !files || files.length === 0} className="mt-3 text-white">
             {isUploading ? "Uploading..." : "Upload media"}
           </Button>

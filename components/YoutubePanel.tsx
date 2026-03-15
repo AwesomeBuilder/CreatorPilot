@@ -18,6 +18,7 @@ type RenderVariantOption = {
   id: string;
   label: string;
   path: string;
+  previewUrl: string;
 };
 
 type MetadataInput = {
@@ -61,6 +62,7 @@ export function YoutubePanel({
     () => Boolean(metadata && effectiveRenderId && variants.length > 0),
     [metadata, effectiveRenderId, variants.length],
   );
+  const selectedVariant = variants.find((variant) => variant.id === effectiveRenderId) ?? null;
 
   return (
     <div className="space-y-4">
@@ -120,6 +122,22 @@ export function YoutubePanel({
           </div>
           {!status || status.mode === "mock" ? (
             <p className="mt-2 text-xs text-[var(--cp-warning)]">Currently in mock mode. Upload call will be simulated.</p>
+          ) : null}
+
+          {selectedVariant ? (
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-medium text-[var(--cp-ink)]">Preview selected render</p>
+                <p className="truncate text-[11px] text-[var(--cp-muted)]">{selectedVariant.path}</p>
+              </div>
+              <video
+                key={selectedVariant.id}
+                controls
+                preload="metadata"
+                className="w-full rounded-lg border border-[var(--cp-border)] bg-black"
+                src={selectedVariant.previewUrl}
+              />
+            </div>
           ) : null}
 
           <Button

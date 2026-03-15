@@ -1,4 +1,5 @@
 import { llmChatJSON } from "@/lib/llm";
+import { evaluateTrendFit } from "@/lib/niche";
 import type { RssEntry } from "@/lib/rss";
 import type { Trend, TrendSourceLink } from "@/lib/types";
 
@@ -36,6 +37,12 @@ const STOP_WORDS = new Set([
 type Cluster = {
   entries: RssEntry[];
   keywordUnion: Set<string>;
+};
+
+type ScoredTrend = Trend & {
+  fitScore: number;
+  rankScore: number;
+  freshness: number;
 };
 
 function tokenize(text: string) {
@@ -107,15 +114,10 @@ function summarizeCluster(cluster: Cluster): Trend {
   const links = sourceLinks.map((entry) => entry.url);
   const sourceCount = new Set(cluster.entries.map((entry) => sourceLabel(entry.sourceUrl))).size;
 
-  const normalizedVolume = Math.min(1, cluster.entries.length / 12);
-  const normalizedSourceDiversity = Math.min(1, sourceCount / 5);
-  const popularityScore = Math.round((normalizedVolume * 0.7 + normalizedSourceDiversity * 0.3) * 100);
-
   return {
     trendTitle: keywordHeadline ? keywordHeadline.replace(/\b\w/g, (c) => c.toUpperCase()) : topTitles[0],
     summary: topTitles.slice(0, 2).join(" | "),
     links,
-    popularityScore,
     sourceCount,
     itemCount: cluster.entries.length,
     sourceLinks,
@@ -152,7 +154,15 @@ async function polishTrendWithLlm(trend: Trend) {
   };
 }
 
-export async function clusterEntriesIntoTrends(entries: RssEntry[], maxTrends = 3) {
+function latestPublishedAt(cluster: Cluster) {
+  const timestamps = cluster.entries
+    .map((entry) => Date.parse(entry.publishedAt ?? ""))
+    .filter((value) => Number.isFinite(value));
+
+  return timestamps.length > 0 ? Math.max(...timestamps) : 0;
+}
+
+export async function clusterEntriesIntoTrends(entries: RssEntry[], maxTrends = 3, niche?: string | null) {
   const deduped = [...new Map(entries.map((entry) => [entry.link, entry])).values()];
 
   const clusters: Cluster[] = [];
@@ -190,8 +200,64 @@ export async function clusterEntriesIntoTrends(entries: RssEntry[], maxTrends = 
     mergeSets(clusters[bestClusterIndex].keywordUnion, entryKeywords);
   }
 
-  const topClusters = clusters.sort((a, b) => b.entries.length - a.entries.length).slice(0, maxTrends);
+  const summarized = clusters.map((cluster) => {
+    const trend = summarizeCluster(cluster);
+    const fit = evaluateTrendFit({
+      niche,
+      entries: cluster.entries.map((entry) => ({
+        title: entry.title,
+        snippet: entry.snippet,
+        sourceUrl: entry.sourceUrl,
+      })),
+    });
 
-  const trends = await Promise.all(topClusters.map(async (cluster) => polishTrendWithLlm(summarizeCluster(cluster))));
-  return trends;
+    return {
+      ...trend,
+      fitLabel: fit.label,
+      fitReason: fit.reason,
+      fitScore: fit.score,
+      rankScore: 0,
+      freshness: latestPublishedAt(cluster),
+    } satisfies ScoredTrend;
+  });
+
+  const maxItems = Math.max(1, ...summarized.map((trend) => trend.itemCount ?? 1));
+  const maxSources = Math.max(1, ...summarized.map((trend) => trend.sourceCount ?? 1));
+  const freshest = Math.max(0, ...summarized.map((trend) => trend.freshness));
+  const stalest = Math.min(...summarized.filter((trend) => trend.freshness > 0).map((trend) => trend.freshness), freshest || 0);
+
+  const scored = summarized.map((trend) => {
+    const volumeScore = (trend.itemCount ?? 1) / maxItems;
+    const diversityScore = (trend.sourceCount ?? 1) / maxSources;
+    const recencyScore =
+      freshest === 0 || freshest === stalest || trend.freshness === 0 ? 0.6 : (trend.freshness - stalest) / (freshest - stalest);
+    const rankScore = trend.fitScore * 0.55 + volumeScore * 0.25 + diversityScore * 0.1 + recencyScore * 0.1;
+
+    return {
+      ...trend,
+      rankScore,
+    };
+  });
+
+  const maxRank = Math.max(0.0001, ...scored.map((trend) => trend.rankScore));
+  const topTrends = scored
+    .sort((left, right) => right.rankScore - left.rankScore)
+    .slice(0, maxTrends)
+    .map((trend) => ({
+      ...trend,
+      popularityScore: Math.round((trend.rankScore / maxRank) * 100),
+    }));
+
+  const polished = await Promise.all(topTrends.map(async (trend) => polishTrendWithLlm(trend)));
+  return polished.map((trend) => ({
+    trendTitle: trend.trendTitle,
+    summary: trend.summary,
+    links: trend.links,
+    popularityScore: trend.popularityScore,
+    sourceCount: trend.sourceCount,
+    itemCount: trend.itemCount,
+    sourceLinks: trend.sourceLinks,
+    fitLabel: trend.fitLabel,
+    fitReason: trend.fitReason,
+  }));
 }

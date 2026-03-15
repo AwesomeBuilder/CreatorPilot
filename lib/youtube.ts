@@ -40,6 +40,46 @@ function getOAuthClient() {
   );
 }
 
+type GoogleApiErrorShape = Error & {
+  code?: number;
+  response?: {
+    status?: number;
+    data?: {
+      error?: {
+        message?: string;
+        status?: string;
+        errors?: Array<{
+          message?: string;
+          reason?: string;
+        }>;
+      };
+    };
+  };
+};
+
+function normalizeYoutubeUploadError(error: unknown) {
+  const candidate = error as GoogleApiErrorShape;
+  const googleError = candidate.response?.data?.error;
+  const reason = googleError?.errors?.[0]?.reason;
+  const message = googleError?.errors?.[0]?.message ?? googleError?.message ?? candidate.message;
+
+  if (reason === "youtubeSignupRequired") {
+    return new Error(
+      "The connected Google account does not have a YouTube channel yet. Open YouTube with that account, create the channel, then reconnect and retry.",
+    );
+  }
+
+  if (reason === "insufficientPermissions") {
+    return new Error("The current YouTube connection is missing upload permissions. Reconnect YouTube and approve the requested access.");
+  }
+
+  if (candidate.response?.status === 401) {
+    return new Error("The YouTube connection was rejected by Google. Reconnect YouTube with the correct account and retry.");
+  }
+
+  return new Error(message ?? "YouTube upload failed.");
+}
+
 function serializeState(userId: string) {
   return Buffer.from(JSON.stringify({ userId, ts: Date.now() })).toString("base64url");
 }
@@ -237,17 +277,21 @@ export async function uploadVideoToYoutube(params: UploadParams) {
     };
   } catch (error) {
     if (!params.publishAt) {
-      throw error;
+      throw normalizeYoutubeUploadError(error);
     }
 
-    const fallbackResponse = await makeRequest(false);
-    return {
-      mode: "live" as const,
-      videoId: fallbackResponse.data.id,
-      privacyStatus: fallbackResponse.data.status?.privacyStatus ?? "private",
-      scheduledPublishAt: null,
-      scheduleNote: "Scheduling was not applied; uploaded as private.",
-      url: fallbackResponse.data.id ? `https://www.youtube.com/watch?v=${fallbackResponse.data.id}` : null,
-    };
+    try {
+      const fallbackResponse = await makeRequest(false);
+      return {
+        mode: "live" as const,
+        videoId: fallbackResponse.data.id,
+        privacyStatus: fallbackResponse.data.status?.privacyStatus ?? "private",
+        scheduledPublishAt: null,
+        scheduleNote: "Scheduling was not applied; uploaded as private.",
+        url: fallbackResponse.data.id ? `https://www.youtube.com/watch?v=${fallbackResponse.data.id}` : null,
+      };
+    } catch (fallbackError) {
+      throw normalizeYoutubeUploadError(fallbackError);
+    }
   }
 }

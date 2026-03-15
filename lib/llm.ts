@@ -6,6 +6,11 @@ const DEFAULT_HARD_MODEL = "gemini-3.1-pro-preview";
 const HARD_PROMPT_CHAR_THRESHOLD = 24_000;
 const HARD_PROMPT_SOURCE_THRESHOLD = 12;
 
+export type ChatContentPart = {
+  type: string;
+  [key: string]: unknown;
+};
+
 const ChatMessageSchema = z.object({
   role: z.enum(["assistant", "user", "system"]),
   content: z.union([
@@ -39,8 +44,16 @@ function resolveModels() {
   };
 }
 
-function isHardPrompt(params: { system: string; user: string }) {
-  const joined = `${params.system}\n${params.user}`;
+function contentToPromptString(content: string | ChatContentPart[]) {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return JSON.stringify(content);
+}
+
+function isHardPrompt(params: { system: string; userContent: string | ChatContentPart[] }) {
+  const joined = `${params.system}\n${contentToPromptString(params.userContent)}`;
   const sourceCount = (joined.match(/https?:\/\//g) ?? []).length;
   const hasSchemaLikeConstraints = /outputSchema|return only valid json|exactly \d+/i.test(joined);
   return (
@@ -55,7 +68,7 @@ async function requestCompletion(params: {
   apiKey: string;
   model: string;
   system: string;
-  user: string;
+  userContent: string | ChatContentPart[];
   temperature: number;
 }) {
   const controller = new AbortController();
@@ -78,7 +91,7 @@ async function requestCompletion(params: {
           },
           {
             role: "user",
-            content: params.user,
+            content: params.userContent,
           },
         ],
       }),
@@ -92,6 +105,18 @@ async function requestCompletion(params: {
 export async function llmChatJSON<T>(params: {
   system: string;
   user: string;
+  temperature?: number;
+}): Promise<T | null> {
+  return llmChatJSONWithUserContent<T>({
+    system: params.system,
+    userContent: params.user,
+    temperature: params.temperature,
+  });
+}
+
+export async function llmChatJSONWithUserContent<T>(params: {
+  system: string;
+  userContent: string | ChatContentPart[];
   temperature?: number;
 }): Promise<T | null> {
   if (!hasLlmConfig()) {
@@ -116,7 +141,7 @@ export async function llmChatJSON<T>(params: {
         apiKey,
         model,
         system: params.system,
-        user: params.user,
+        userContent: params.userContent,
         temperature: params.temperature ?? 0.4,
       });
 

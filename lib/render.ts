@@ -1,11 +1,32 @@
 import { execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
 import type { RenderFormat, RenderOutput, RenderPreference } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
+
+function resolveBundledBinary(relativePath: string[]) {
+  const candidate = path.join(process.cwd(), "node_modules", ...relativePath);
+  return existsSync(candidate) ? candidate : null;
+}
+
+const FFMPEG_BIN =
+  process.env.FFMPEG_PATH ??
+  resolveBundledBinary(["ffmpeg-static", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"]) ??
+  "ffmpeg";
+
+const FFPROBE_BIN =
+  process.env.FFPROBE_PATH ??
+  resolveBundledBinary([
+    "ffprobe-static",
+    "bin",
+    process.platform,
+    process.arch,
+    process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
+  ]) ??
+  "ffprobe";
 
 const INTRO_DURATION = 2;
 const OUTRO_DURATION = 2;
@@ -24,16 +45,78 @@ type ProbeResult = {
   duration?: number;
 };
 
-function escapeDrawtext(text: string) {
-  return text
+function escapeFilterValue(value: string) {
+  return value
     .replace(/\\/g, "\\\\")
     .replace(/:/g, "\\:")
     .replace(/'/g, "\\\\'")
     .replace(/,/g, "\\,")
     .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]")
-    .replace(/\n/g, " ")
-    .slice(0, 180);
+    .replace(/\]/g, "\\]");
+}
+
+function sanitizeOverlayText(text: string, maxLength: number) {
+  return text.replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function wrapOverlayText(text: string, maxLineLength: number, maxLines: number) {
+  const words = sanitizeOverlayText(text, maxLineLength * maxLines * 2)
+    .split(" ")
+    .filter(Boolean);
+
+  const lines: string[] = [];
+  let currentLine = "";
+
+  for (const word of words) {
+    const nextLine = currentLine ? `${currentLine} ${word}` : word;
+    if (nextLine.length <= maxLineLength) {
+      currentLine = nextLine;
+      continue;
+    }
+
+    if (currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      lines.push(word.slice(0, maxLineLength));
+      currentLine = word.slice(maxLineLength);
+    }
+
+    if (lines.length === maxLines) {
+      break;
+    }
+  }
+
+  if (lines.length < maxLines && currentLine) {
+    lines.push(currentLine);
+  }
+
+  if (lines.length === 0) {
+    return "";
+  }
+
+  if (lines.length > maxLines) {
+    return `${lines.slice(0, maxLines).join("\n").slice(0, -1)}...`;
+  }
+
+  const hasOverflow = words.join(" ").length > lines.join(" ").length;
+  if (hasOverflow) {
+    const lastLine = lines[lines.length - 1] ?? "";
+    lines[lines.length - 1] = lastLine.length >= maxLineLength ? `${lastLine.slice(0, maxLineLength - 1)}…` : `${lastLine}…`;
+  }
+
+  return lines.join("\n");
+}
+
+async function withOverlayTextFile<T>(params: { basePath: string; suffix: string; text: string }, run: (textFilePath: string) => Promise<T>) {
+  const textFilePath = `${params.basePath}.${params.suffix}.txt`;
+  await fs.writeFile(textFilePath, params.text, "utf8");
+
+  try {
+    return await run(textFilePath);
+  } finally {
+    await fs.unlink(textFilePath).catch(() => undefined);
+  }
 }
 
 async function ensureDir(dirPath: string) {
@@ -41,14 +124,28 @@ async function ensureDir(dirPath: string) {
 }
 
 async function runBinary(command: string, args: string[]) {
-  await execFileAsync(command, args, {
-    maxBuffer: 8 * 1024 * 1024,
-  });
+  try {
+    await execFileAsync(command, args, {
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      if (command === FFMPEG_BIN) {
+        throw new Error("FFmpeg is unavailable. Install it locally or set FFMPEG_PATH.");
+      }
+
+      if (command === FFPROBE_BIN) {
+        throw new Error("FFprobe is unavailable. Install it locally or set FFPROBE_PATH.");
+      }
+    }
+
+    throw error;
+  }
 }
 
 async function ensureFfmpegInstalled() {
-  await runBinary("ffmpeg", ["-version"]);
-  await runBinary("ffprobe", ["-version"]);
+  await runBinary(FFMPEG_BIN, ["-version"]);
+  await runBinary(FFPROBE_BIN, ["-version"]);
 }
 
 function isImage(inputPath: string) {
@@ -57,7 +154,7 @@ function isImage(inputPath: string) {
 
 async function probeMedia(inputPath: string): Promise<ProbeResult> {
   try {
-    const { stdout } = await execFileAsync("ffprobe", [
+    const { stdout } = await execFileAsync(FFPROBE_BIN, [
       "-v",
       "error",
       "-show_entries",
@@ -84,6 +181,21 @@ async function probeMedia(inputPath: string): Promise<ProbeResult> {
   }
 }
 
+function splitIntoSegments(text: string) {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function buildBodySegments(params: { hook: string; bulletOutline?: string[] }) {
+  const segments = [...splitIntoSegments(params.hook), ...(params.bulletOutline ?? [])]
+    .map((segment) => sanitizeOverlayText(segment, 180))
+    .filter(Boolean);
+
+  return segments.slice(0, 4);
+}
+
 function pickFormat(preference: RenderPreference, probe: ProbeResult): { format: RenderFormat; reason: string } {
   if (preference === "shorts") {
     return {
@@ -106,7 +218,7 @@ function pickFormat(preference: RenderPreference, probe: ProbeResult): { format:
     };
   }
 
-  if (probe.duration && probe.duration <= 75) {
+  if (probe.duration && probe.duration > 1 && probe.duration <= 75) {
     return {
       format: "shorts",
       reason: "Auto-selected Shorts because source media duration is short.",
@@ -136,28 +248,42 @@ async function createCardClip(params: {
   backgroundColor: string;
   textColor: string;
 }) {
-  const drawtext = `drawtext=text='${escapeDrawtext(params.text)}':fontcolor=${params.textColor}:fontsize=${Math.round(
-    params.height * 0.05,
-  )}:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.45:boxborderw=18`;
+  const maxLineLength = params.height > params.width ? 22 : 34;
+  const formattedText = wrapOverlayText(params.text, maxLineLength, 3);
 
-  await runBinary("ffmpeg", [
-    "-y",
-    "-f",
-    "lavfi",
-    "-i",
-    `color=c=${params.backgroundColor}:s=${params.width}x${params.height}:d=${params.duration}`,
-    "-vf",
-    drawtext,
-    "-r",
-    "30",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-pix_fmt",
-    "yuv420p",
-    params.outputPath,
-  ]);
+  await withOverlayTextFile(
+    {
+      basePath: params.outputPath,
+      suffix: "card",
+      text: formattedText,
+    },
+    async (textFilePath) => {
+      const drawtext = `drawtext=textfile='${escapeFilterValue(textFilePath)}':expansion=none:fontcolor=${
+        params.textColor
+      }:fontsize=${Math.round(params.height * 0.05)}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=${Math.round(
+        params.height * 0.012,
+      )}:fix_bounds=1:box=1:boxcolor=black@0.45:boxborderw=18`;
+
+      await runBinary(FFMPEG_BIN, [
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        `color=c=${params.backgroundColor}:s=${params.width}x${params.height}:d=${params.duration}`,
+        "-vf",
+        drawtext,
+        "-r",
+        "30",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-pix_fmt",
+        "yuv420p",
+        params.outputPath,
+      ]);
+    },
+  );
 }
 
 async function createBodyClip(params: {
@@ -166,48 +292,77 @@ async function createBodyClip(params: {
   width: number;
   height: number;
   duration: number;
-  hookText: string;
+  captionText: string;
   titleText: string;
   accentColor: string;
 }) {
-  const topText = escapeDrawtext(params.titleText);
-  const bottomText = escapeDrawtext(params.hookText);
+  const titleLineLength = params.height > params.width ? 22 : 34;
+  const hookLineLength = params.height > params.width ? 24 : 40;
+  const topText = wrapOverlayText(params.titleText, titleLineLength, 2);
+  const bottomText = wrapOverlayText(params.captionText, hookLineLength, 3);
+  const foregroundWidth = Math.round(params.width * (params.height > params.width ? 0.88 : 0.82));
+  const foregroundHeight = Math.round(params.height * (params.height > params.width ? 0.36 : 0.72));
+  const overlayYOffset = Math.round(params.height * 0.04);
+  const titleFontSize = Math.round(params.height * (params.height > params.width ? 0.032 : 0.048));
+  const captionFontSize = Math.round(params.height * (params.height > params.width ? 0.025 : 0.038));
 
-  const filter = [
-    `scale=${params.width}:${params.height}:force_original_aspect_ratio=decrease`,
-    `pad=${params.width}:${params.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
-    `drawtext=text='${topText}':fontcolor=${params.accentColor}:fontsize=${Math.round(
-      params.height * 0.035,
-    )}:x=(w-text_w)/2:y=${Math.round(params.height * 0.06)}:box=1:boxcolor=black@0.5:boxborderw=12:enable='between(t,0,6)'`,
-    `drawtext=text='${bottomText}':fontcolor=white:fontsize=${Math.round(
-      params.height * 0.03,
-    )}:x=(w-text_w)/2:y=h-${Math.round(params.height * 0.14)}:box=1:boxcolor=black@0.6:boxborderw=10:enable='between(t,1,12)'`,
-  ].join(",");
+  await withOverlayTextFile(
+    {
+      basePath: params.outputPath,
+      suffix: "title",
+      text: topText,
+    },
+    async (titleFilePath) =>
+      withOverlayTextFile(
+        {
+          basePath: params.outputPath,
+          suffix: "hook",
+          text: bottomText,
+        },
+        async (hookFilePath) => {
+          const filter = [
+            `[0:v]scale=${params.width}:${params.height}:force_original_aspect_ratio=increase,crop=${params.width}:${params.height},boxblur=26:10[bg]`,
+            `[0:v]scale=${foregroundWidth}:${foregroundHeight}:force_original_aspect_ratio=decrease[fg]`,
+            `[bg][fg]overlay=(W-w)/2:((H-h)/2)-${overlayYOffset},drawtext=textfile='${escapeFilterValue(
+              titleFilePath,
+            )}':expansion=none:fontcolor=${params.accentColor}:fontsize=${titleFontSize}:x=(w-text_w)/2:y=${Math.round(
+              params.height * 0.06,
+            )}:line_spacing=${Math.round(params.height * 0.008)}:fix_bounds=1:box=1:boxcolor=black@0.35:boxborderw=18:enable='between(t,0,2.8)',drawtext=textfile='${escapeFilterValue(
+              hookFilePath,
+            )}':expansion=none:fontcolor=white:fontsize=${captionFontSize}:x=(w-text_w)/2:y=h-text_h-${Math.round(
+              params.height * 0.12,
+            )}:line_spacing=${Math.round(params.height * 0.007)}:fix_bounds=1:box=1:boxcolor=black@0.55:boxborderw=18:enable='between(t,0.3,${
+              params.duration - 0.2
+            })'`,
+          ].join(";");
 
-  const common = [
-    "-y",
-    "-t",
-    String(params.duration),
-    "-vf",
-    filter,
-    "-r",
-    "30",
-    "-an",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-pix_fmt",
-    "yuv420p",
-    params.outputPath,
-  ];
+          const common = [
+            "-y",
+            "-t",
+            String(params.duration),
+            "-filter_complex",
+            filter,
+            "-r",
+            "30",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            params.outputPath,
+          ];
 
-  if (isImage(params.inputPath)) {
-    await runBinary("ffmpeg", ["-loop", "1", "-i", params.inputPath, ...common]);
-    return;
-  }
+          if (isImage(params.inputPath)) {
+            await runBinary(FFMPEG_BIN, ["-loop", "1", "-i", params.inputPath, ...common]);
+            return;
+          }
 
-  await runBinary("ffmpeg", ["-i", params.inputPath, ...common]);
+          await runBinary(FFMPEG_BIN, ["-i", params.inputPath, ...common]);
+        },
+      ),
+  );
 }
 
 async function concatClips(clips: string[], outputPath: string) {
@@ -216,7 +371,7 @@ async function concatClips(clips: string[], outputPath: string) {
 
   await fs.writeFile(concatPath, content, "utf8");
 
-  await runBinary("ffmpeg", [
+  await runBinary(FFMPEG_BIN, [
     "-y",
     "-f",
     "concat",
@@ -244,6 +399,7 @@ export async function renderVideoVariants(params: {
   mediaPaths: string[];
   title: string;
   hook: string;
+  bulletOutline?: string[];
   cta: string;
   preference: RenderPreference;
 }): Promise<RenderOutput> {
@@ -262,13 +418,15 @@ export async function renderVideoVariants(params: {
   await ensureDir(outputDir);
 
   const variants = [] as RenderOutput["variants"];
+  const bodySegments = buildBodySegments({
+    hook: params.hook,
+    bulletOutline: params.bulletOutline,
+  });
+  const effectiveSegments = bodySegments.length > 0 ? bodySegments : [params.hook];
 
   const effectiveBodyDuration = Math.max(
-    12,
-    Math.min(
-      bodyDuration,
-      probe.duration && Number.isFinite(probe.duration) ? Math.floor(probe.duration) : bodyDuration,
-    ),
+    picked.format === "shorts" ? 14 : 16,
+    Math.min(bodyDuration, effectiveSegments.length * (picked.format === "shorts" ? 4 : 5)),
   );
 
   for (let index = 0; index < 3; index += 1) {
@@ -279,9 +437,10 @@ export async function renderVideoVariants(params: {
     await ensureDir(tempDir);
 
     const introPath = path.join(tempDir, `intro-${variantIndex}.mp4`);
-    const bodyPath = path.join(tempDir, `body-${variantIndex}.mp4`);
     const outroPath = path.join(tempDir, `outro-${variantIndex}.mp4`);
     const finalPath = path.join(outputDir, `variant-${variantIndex}.mp4`);
+    const bodyClipPaths: string[] = [];
+    const baseSegmentDuration = Math.max(3, Math.floor(effectiveBodyDuration / effectiveSegments.length));
 
     await createCardClip({
       outputPath: introPath,
@@ -293,16 +452,33 @@ export async function renderVideoVariants(params: {
       textColor: style.accentColor,
     });
 
-    await createBodyClip({
-      inputPath: firstMedia,
-      outputPath: bodyPath,
-      width,
-      height,
-      duration: effectiveBodyDuration,
-      hookText: params.hook,
-      titleText: params.title,
-      accentColor: style.accentColor,
-    });
+    let elapsedBodyDuration = 0;
+
+    for (let segmentIndex = 0; segmentIndex < effectiveSegments.length; segmentIndex += 1) {
+      const remainingDuration = effectiveBodyDuration - elapsedBodyDuration;
+      const segmentDuration =
+        segmentIndex === effectiveSegments.length - 1 ? remainingDuration : Math.min(baseSegmentDuration, remainingDuration);
+
+      if (segmentDuration <= 0) {
+        break;
+      }
+
+      const bodyPath = path.join(tempDir, `body-${variantIndex}-${segmentIndex + 1}.mp4`);
+
+      await createBodyClip({
+        inputPath: params.mediaPaths[segmentIndex % params.mediaPaths.length] ?? firstMedia,
+        outputPath: bodyPath,
+        width,
+        height,
+        duration: segmentDuration,
+        captionText: effectiveSegments[segmentIndex] ?? params.hook,
+        titleText: params.title,
+        accentColor: style.accentColor,
+      });
+
+      bodyClipPaths.push(bodyPath);
+      elapsedBodyDuration += segmentDuration;
+    }
 
     await createCardClip({
       outputPath: outroPath,
@@ -314,9 +490,9 @@ export async function renderVideoVariants(params: {
       textColor: "white",
     });
 
-    await concatClips([introPath, bodyPath, outroPath], finalPath);
+    await concatClips([introPath, ...bodyClipPaths, outroPath], finalPath);
 
-    const duration = INTRO_DURATION + OUTRO_DURATION + effectiveBodyDuration;
+    const duration = INTRO_DURATION + OUTRO_DURATION + elapsedBodyDuration;
 
     variants.push({
       variantIndex,

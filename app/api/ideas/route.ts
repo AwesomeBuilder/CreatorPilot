@@ -12,6 +12,8 @@ const InputSchema = z.object({
     trendTitle: z.string().min(1),
     summary: z.string().min(1),
     links: z.array(z.string().url()).default([]),
+    fitLabel: z.enum(["Direct fit", "Adjacent angle", "Broad news", "Open feed"]).optional(),
+    fitReason: z.string().optional(),
   }),
 });
 

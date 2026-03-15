@@ -13,6 +13,7 @@ const routeMocks = vi.hoisted(() => ({
   createJob: vi.fn(),
   runJobInBackground: vi.fn(),
   renderVideoVariants: vi.fn(),
+  assessMediaRelevance: vi.fn(),
   resolveUser: vi.fn(),
 }));
 
@@ -29,6 +30,10 @@ vi.mock("@/lib/render", () => ({
   renderVideoVariants: routeMocks.renderVideoVariants,
 }));
 
+vi.mock("@/lib/media-relevance", () => ({
+  assessMediaRelevance: routeMocks.assessMediaRelevance,
+}));
+
 vi.mock("@/lib/user", () => ({
   resolveUser: routeMocks.resolveUser,
 }));
@@ -43,6 +48,7 @@ describe("POST /api/render", () => {
     routeMocks.createJob.mockReset();
     routeMocks.runJobInBackground.mockReset();
     routeMocks.renderVideoVariants.mockReset();
+    routeMocks.assessMediaRelevance.mockReset();
     routeMocks.resolveUser.mockReset();
   });
 
@@ -64,17 +70,39 @@ describe("POST /api/render", () => {
     expect(response.status).toBe(400);
   });
 
-  it("throws from the background task when no valid media assets exist", async () => {
-    routeMocks.createJob.mockResolvedValue({ id: "job-1", status: "queued" });
+  it("returns 400 when no valid media assets exist", async () => {
     routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
     routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([]);
 
-    let backgroundTask:
-      | ((helpers: { log: (message: string) => Promise<void> }) => Promise<unknown>)
-      | undefined;
+    const response = await POST(
+      new Request("http://localhost/api/render", {
+        method: "POST",
+        body: JSON.stringify({
+          idea: {
+            videoTitle: "Idea",
+            hook: "Hook",
+            bulletOutline: [],
+            cta: "CTA",
+          },
+          mediaAssetIds: ["asset-1"],
+          preference: "auto",
+        }),
+      }),
+    );
 
-    routeMocks.runJobInBackground.mockImplementation((_: string, task: typeof backgroundTask) => {
-      backgroundTask = task;
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "No valid media assets found for rendering." });
+  });
+
+  it("returns 400 when the media assessment blocks the selected assets", async () => {
+    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: "/tmp/input-a.png", type: "image" }]);
+    routeMocks.assessMediaRelevance.mockResolvedValue({
+      status: "irrelevant",
+      confidence: 0.91,
+      summary: "Upload media that matches the selected idea before rendering.",
+      matchedSignals: ["Copilot Tasks"],
+      shouldBlock: true,
     });
 
     const response = await POST(
@@ -84,6 +112,7 @@ describe("POST /api/render", () => {
           idea: {
             videoTitle: "Idea",
             hook: "Hook",
+            bulletOutline: [],
             cta: "CTA",
           },
           mediaAssetIds: ["asset-1"],
@@ -92,19 +121,33 @@ describe("POST /api/render", () => {
       }),
     );
 
-    expect(await response.json()).toEqual({ jobId: "job-1", status: "queued" });
-
-    const log = vi.fn().mockResolvedValue(undefined);
-    await expect(backgroundTask?.({ log })).rejects.toThrow("No valid media assets found for rendering.");
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Upload media that matches the selected idea before rendering.",
+      assessment: {
+        status: "irrelevant",
+        confidence: 0.91,
+        summary: "Upload media that matches the selected idea before rendering.",
+        matchedSignals: ["Copilot Tasks"],
+        shouldBlock: true,
+      },
+    });
   });
 
   it("resolves asset paths, renders variants, and persists them in a transaction", async () => {
     routeMocks.createJob.mockResolvedValue({ id: "job-1", status: "queued" });
     routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
     routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([
-      { id: "asset-1", path: "/tmp/input-a.mp4" },
-      { id: "asset-2", path: "/tmp/input-b.mp4" },
+      { id: "asset-1", path: "/tmp/input-a.mp4", type: "video" },
+      { id: "asset-2", path: "/tmp/input-b.mp4", type: "video" },
     ]);
+    routeMocks.assessMediaRelevance.mockResolvedValue({
+      status: "relevant",
+      confidence: 0.88,
+      summary: "Looks good.",
+      matchedSignals: ["ByteDance"],
+      shouldBlock: false,
+    });
     routeMocks.prisma.render.create
       .mockReturnValueOnce("render-query-1")
       .mockReturnValueOnce("render-query-2")
@@ -136,6 +179,7 @@ describe("POST /api/render", () => {
           idea: {
             videoTitle: "Idea",
             hook: "Hook",
+            bulletOutline: ["Point 1"],
             cta: "CTA",
           },
           mediaAssetIds: ["asset-1", "asset-2"],
@@ -162,6 +206,7 @@ describe("POST /api/render", () => {
       mediaPaths: ["/tmp/input-a.mp4", "/tmp/input-b.mp4"],
       title: "Idea",
       hook: "Hook",
+      bulletOutline: ["Point 1"],
       cta: "CTA",
       preference: "shorts",
     });
