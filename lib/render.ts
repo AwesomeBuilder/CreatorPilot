@@ -331,3 +331,11 @@ export async function renderVideoVariants(params: {
     variants,
   };
 }
+
+export const renderTestUtils = {
+  escapeFilterValue,
+  sanitizeOverlayText,
+  wrapOverlayText,
+  pickFormat,
+  resolutionForFormat,
+};
