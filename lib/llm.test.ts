@@ -222,6 +222,45 @@ describe("llmChatJSON", () => {
     expect(result.modelUsed).toBe("tts-model");
   });
 
+  it("asks the TTS model for a normal conversational pace", async () => {
+    process.env.LLM_API_KEY = "test-key";
+    process.env.LLM_TTS_MODEL = "tts-model";
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: "audio/pcm;rate=24000",
+                      data: "ZmFrZQ==",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await llmGenerateSpeechDetailed({
+      text: "Narrate this clearly.",
+    });
+
+    expect(result.pcmBase64).toBe("ZmFrZQ==");
+
+    const payload = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(payload.contents[0].parts[0].text).toContain("normal conversational pace");
+    expect(payload.contents[0].parts[0].text).toContain("Do not rush, compress, or speed up the delivery");
+  });
+
   it("includes a response preview when the model returns invalid JSON text", async () => {
     process.env.LLM_API_KEY = "test-key";
     process.env.LLM_MODEL_DEFAULT = "default-model";

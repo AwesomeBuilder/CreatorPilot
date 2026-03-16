@@ -274,6 +274,67 @@ function roundSeconds(value: number) {
   return Number(value.toFixed(2));
 }
 
+const MINIMUM_BEAT_DURATIONS = {
+  shorts: {
+    hook: 3.4,
+    body: 3.1,
+    cta: 2.4,
+  },
+  landscape: {
+    hook: 4.4,
+    body: 4.1,
+    cta: 3.2,
+  },
+} satisfies Record<RenderFormat, { hook: number; body: number; cta: number }>;
+
+const NATURAL_NARRATION_WORDS_PER_SECOND = 2.45;
+const NATURAL_NARRATION_BUFFER_SECONDS = 0.72;
+
+function narrationWordCount(text: string) {
+  return normalizeText(text, 320)
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function minimumBeatDuration(params: {
+  format: RenderFormat;
+  purpose: BeatPurpose;
+}) {
+  const preset = MINIMUM_BEAT_DURATIONS[params.format];
+
+  if (params.purpose === "hook") {
+    return preset.hook;
+  }
+
+  if (params.purpose === "cta") {
+    return preset.cta;
+  }
+
+  return preset.body;
+}
+
+function estimateBeatDurationSeconds(params: {
+  text: string;
+  format: RenderFormat;
+  purpose: BeatPurpose;
+}) {
+  const minimum = minimumBeatDuration(params);
+  const wordCount = narrationWordCount(params.text);
+
+  if (wordCount === 0) {
+    return minimum;
+  }
+
+  const bufferSeconds =
+    params.purpose === "hook"
+      ? NATURAL_NARRATION_BUFFER_SECONDS + 0.12
+      : params.purpose === "cta"
+        ? NATURAL_NARRATION_BUFFER_SECONDS - 0.08
+        : NATURAL_NARRATION_BUFFER_SECONDS;
+
+  return roundSeconds(Math.max(minimum, wordCount / NATURAL_NARRATION_WORDS_PER_SECOND + bufferSeconds));
+}
+
 function secondsLabel(value?: number) {
   if (typeof value !== "number") {
     return null;
@@ -369,11 +430,9 @@ function buildBeats(params: { trend: Trend; idea: Idea; format: RenderFormat }):
     trimmedBody.push(`Why this matters for ${params.idea.videoTitle}`);
   }
 
-  const durations =
-    params.format === "shorts"
-      ? { hook: 3.4, body: 3.1, cta: 2.4 }
-      : { hook: 4.4, body: 4.1, cta: 3.2 };
   const purposes: BeatPurpose[] = ["context", "proof", "explanation", "takeaway"];
+  const hookCaption = normalizeBeatLine(params.idea.hook, params.format === "shorts" ? 92 : 120);
+  const hookNarration = normalizeBeatLine(params.idea.hook, 180);
 
   const beats: StoryboardBeat[] = [
     {
@@ -381,9 +440,13 @@ function buildBeats(params: { trend: Trend; idea: Idea; format: RenderFormat }):
       order: 1,
       purpose: "hook",
       title: normalizeBeatLine(params.idea.videoTitle, 72),
-      caption: normalizeBeatLine(params.idea.hook, params.format === "shorts" ? 92 : 120),
-      narration: normalizeBeatLine(params.idea.hook, 180),
-      durationSeconds: durations.hook,
+      caption: hookCaption,
+      narration: hookNarration,
+      durationSeconds: estimateBeatDurationSeconds({
+        text: hookNarration,
+        format: params.format,
+        purpose: "hook",
+      }),
       visualIntent: `A strong opening visual that immediately grounds the audience in ${params.trend.trendTitle}.`,
       coverageLevel: "missing",
       matchScore: 0,
@@ -398,14 +461,22 @@ function buildBeats(params: { trend: Trend; idea: Idea; format: RenderFormat }):
   ];
 
   trimmedBody.forEach((point, index) => {
+    const purpose = purposes[index] ?? "takeaway";
+    const bodyCaption = normalizeBeatLine(point, params.format === "shorts" ? 84 : 108);
+    const bodyNarration = normalizeBeatLine(point, 160);
+
     beats.push({
       beatId: `beat-${index + 2}`,
       order: index + 2,
-      purpose: purposes[index] ?? "takeaway",
+      purpose,
       title: normalizeBeatLine(point, 66),
-      caption: normalizeBeatLine(point, params.format === "shorts" ? 84 : 108),
-      narration: normalizeBeatLine(point, 160),
-      durationSeconds: durations.body,
+      caption: bodyCaption,
+      narration: bodyNarration,
+      durationSeconds: estimateBeatDurationSeconds({
+        text: bodyNarration,
+        format: params.format,
+        purpose,
+      }),
       visualIntent:
         index === 0
           ? `Context or proof that makes "${point}" feel concrete.`
@@ -422,14 +493,20 @@ function buildBeats(params: { trend: Trend; idea: Idea; format: RenderFormat }):
     });
   });
 
+  const ctaCaption = normalizeBeatLine(params.idea.cta, params.format === "shorts" ? 76 : 96);
+  const ctaNarration = normalizeBeatLine(params.idea.cta, 140);
   beats.push({
     beatId: `beat-${beats.length + 1}`,
     order: beats.length + 1,
     purpose: "cta",
     title: "Close strong",
-    caption: normalizeBeatLine(params.idea.cta, params.format === "shorts" ? 76 : 96),
-    narration: normalizeBeatLine(params.idea.cta, 140),
-    durationSeconds: durations.cta,
+    caption: ctaCaption,
+    narration: ctaNarration,
+    durationSeconds: estimateBeatDurationSeconds({
+      text: ctaNarration,
+      format: params.format,
+      purpose: "cta",
+    }),
     visualIntent: "A clean closing frame that leaves space for the CTA and channel branding.",
     coverageLevel: "missing",
     matchScore: 0,
@@ -1457,6 +1534,7 @@ export function storyboardPlanToAssessment(plan: StoryboardPlan): MediaRelevance
 export const storyboardTestUtils = {
   beatCoverageLevel,
   buildBeats,
+  estimateBeatDurationSeconds,
   finalizeBeats,
   generatedPrompt,
   scoreCandidateForBeat,

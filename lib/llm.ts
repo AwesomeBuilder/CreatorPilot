@@ -706,7 +706,7 @@ export async function llmGenerateSpeechDetailed(params: {
             {
               parts: [
                 {
-                  text: `Say in a clear, natural, professional voice: ${params.text}`,
+                  text: `Say this in a clear, natural, professional voice at a normal conversational pace. Do not rush, compress, or speed up the delivery. Script: ${params.text}`,
                 },
               ],
             },

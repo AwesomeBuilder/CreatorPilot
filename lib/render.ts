@@ -1056,6 +1056,7 @@ export async function renderVideoVariants(params: {
     jobId: params.jobId,
     storyboard: resolvedStoryboard,
   });
+  const timedStoryboard = narrationTrack.storyboard ?? resolvedStoryboard;
 
   for (let index = 0; index < VARIANT_STYLES.length; index += 1) {
     const style = VARIANT_STYLES[index];
@@ -1063,7 +1064,7 @@ export async function renderVideoVariants(params: {
     await ensureDir(tempDir);
 
     const clipPaths: string[] = [];
-    for (const beat of resolvedStoryboard.beats) {
+    for (const beat of timedStoryboard.beats) {
       const clipPath = path.join(tempDir, `${beat.beatId}.mp4`);
       await createBeatClip({
         outputPath: clipPath,
@@ -1103,7 +1104,7 @@ export async function renderVideoVariants(params: {
     variants.push({
       variantIndex: index + 1,
       path: finalPath,
-      duration: Math.round(resolvedStoryboard.durationSeconds ?? resolvedStoryboard.beats.reduce((sum, beat) => sum + beat.durationSeconds, 0)),
+      duration: Math.round(timedStoryboard.durationSeconds ?? timedStoryboard.beats.reduce((sum, beat) => sum + beat.durationSeconds, 0)),
       hasAudio: finalProbe.hasAudio ?? false,
       audioSummary: narrationTrack.audioComposition.summary,
     });
@@ -1118,7 +1119,7 @@ export async function renderVideoVariants(params: {
     audioComposition: narrationTrack.audioComposition,
     generatedVideoBeatCount: resolvedStoryboardResult.generatedVideoBeatCount,
     generatedVideoFailureCount: resolvedStoryboardResult.generatedVideoFailureCount,
-    storyboard: resolvedStoryboard,
+    storyboard: timedStoryboard,
   };
 }
 

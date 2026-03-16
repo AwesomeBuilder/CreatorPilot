@@ -51,6 +51,26 @@ describe("storyboard helpers", () => {
     expect(beats.at(-1)?.purpose).toBe("cta");
   });
 
+  it("extends beat durations when the narration copy needs more room", () => {
+    const beats = storyboardTestUtils.buildBeats({
+      trend,
+      idea: {
+        ...idea,
+        hook: "This workflow update changes how creators script, edit, review analytics, and publish, so the opening narration needs enough room to land naturally.",
+        bulletOutline: [
+          "Show the workflow screens creators now have to move through and explain what changed in each step.",
+          "Break down why the new analytics view changes the decisions creators make after every upload.",
+        ],
+        cta: "Follow for a deeper walkthrough of the workflow, the analytics changes, and the practical creator playbook.",
+      },
+      format: "shorts",
+    });
+
+    expect(beats[0]?.durationSeconds).toBeGreaterThan(3.4);
+    expect(beats[1]?.durationSeconds).toBeGreaterThan(3.1);
+    expect(beats.at(-1)?.durationSeconds).toBeGreaterThan(2.4);
+  });
+
   it("plans generated supporting visuals for weak beats when generation is enabled", () => {
     process.env.ENABLE_GENERATED_SUPPORT_MEDIA = "true";
     process.env.GENERATED_SUPPORT_MEDIA_MODE = "video";

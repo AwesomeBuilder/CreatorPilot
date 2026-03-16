@@ -39,22 +39,8 @@ function parseSampleRate(mimeType?: string | null) {
   return match ? Number(match[1]) : DEFAULT_SAMPLE_RATE;
 }
 
-function atempoFilterChain(speed: number) {
-  const filters: string[] = [];
-  let remaining = speed;
-
-  while (remaining > 2) {
-    filters.push("atempo=2");
-    remaining /= 2;
-  }
-
-  while (remaining < 0.5) {
-    filters.push("atempo=0.5");
-    remaining /= 0.5;
-  }
-
-  filters.push(`atempo=${remaining.toFixed(4)}`);
-  return filters.join(",");
+function roundSeconds(value: number) {
+  return Number(value.toFixed(2));
 }
 
 function resolveNumericEnv(name: string, fallback: number) {
@@ -82,22 +68,23 @@ async function createSilenceSegment(outputPath: string, durationSeconds: number)
   ]);
 }
 
-async function fitSegmentToBeat(params: {
+function narrationSegmentDuration(params: {
+  sourceDuration?: number;
+  minimumDuration: number;
+}) {
+  const sourceDuration = Math.max(0.2, params.sourceDuration ?? params.minimumDuration);
+  if (sourceDuration <= params.minimumDuration) {
+    return roundSeconds(params.minimumDuration);
+  }
+
+  return roundSeconds(sourceDuration + 0.12);
+}
+
+async function renderSegmentAtDuration(params: {
   inputPath: string;
   outputPath: string;
   durationSeconds: number;
 }) {
-  const probe = await probeMedia(params.inputPath);
-  const sourceDuration = Math.max(0.2, probe.duration ?? params.durationSeconds);
-  const speed = sourceDuration > params.durationSeconds ? sourceDuration / params.durationSeconds : 1;
-  const filters = [
-    speed > 1.02 ? atempoFilterChain(Math.min(speed, 2.8)) : null,
-    `apad=pad_dur=${params.durationSeconds}`,
-    `atrim=0:${params.durationSeconds}`,
-  ]
-    .filter(Boolean)
-    .join(",");
-
   await runBinary(FFMPEG_BIN, [
     "-y",
     "-i",
@@ -107,7 +94,7 @@ async function fitSegmentToBeat(params: {
     "-ac",
     "1",
     "-filter:a",
-    filters,
+    [`apad=pad_dur=${params.durationSeconds}`, `atrim=0:${params.durationSeconds}`].join(","),
     "-c:a",
     "pcm_s16le",
     params.outputPath,
@@ -348,6 +335,7 @@ export async function buildNarrationTrack(params: {
       error: "Generated narration is disabled by RENDER_ENABLE_GENERATED_NARRATION.",
       spokenSegmentCount: 0,
       subtitleCues: [],
+      storyboard,
       modelUsed: null,
       audioComposition: composition,
     };
@@ -359,6 +347,7 @@ export async function buildNarrationTrack(params: {
   const segmentPaths: string[] = [];
   const errors: string[] = [];
   const modelUsed: string[] = [];
+  const beatDurations = new Map<string, number>();
   const spokenBeatIds = new Set<string>();
   let spokenSegmentCount = 0;
 
@@ -370,6 +359,7 @@ export async function buildNarrationTrack(params: {
     if (!narrationText) {
       await createSilenceSegment(fittedSegmentPath, beat.durationSeconds);
       segmentPaths.push(fittedSegmentPath);
+      beatDurations.set(beat.beatId, beat.durationSeconds);
       continue;
     }
 
@@ -381,18 +371,25 @@ export async function buildNarrationTrack(params: {
       errors.push(speech.error ?? `Narration generation failed for "${beat.title}".`);
       await createSilenceSegment(fittedSegmentPath, beat.durationSeconds);
       segmentPaths.push(fittedSegmentPath);
+      beatDurations.set(beat.beatId, beat.durationSeconds);
       continue;
     }
 
     const pcmBuffer = Buffer.from(speech.pcmBase64, "base64");
     const wavBuffer = pcmToWavBuffer(pcmBuffer, parseSampleRate(speech.mimeType));
     await fs.writeFile(rawSegmentPath, wavBuffer);
-    await fitSegmentToBeat({
+    const rawSegmentProbe = await probeMedia(rawSegmentPath);
+    const adjustedDuration = narrationSegmentDuration({
+      sourceDuration: rawSegmentProbe.duration,
+      minimumDuration: beat.durationSeconds,
+    });
+    await renderSegmentAtDuration({
       inputPath: rawSegmentPath,
       outputPath: fittedSegmentPath,
-      durationSeconds: beat.durationSeconds,
+      durationSeconds: adjustedDuration,
     });
     segmentPaths.push(fittedSegmentPath);
+    beatDurations.set(beat.beatId, adjustedDuration);
     if (speech.modelUsed) {
       modelUsed.push(speech.modelUsed);
     }
@@ -400,7 +397,15 @@ export async function buildNarrationTrack(params: {
     spokenSegmentCount += 1;
   }
 
-  const subtitleCues: StoryboardSubtitleCue[] = storyboard.beats
+  const adjustedStoryboard = applyStoryboardEditorialTiming({
+    ...storyboard,
+    beats: storyboard.beats.map((beat) => ({
+      ...beat,
+      durationSeconds: beatDurations.get(beat.beatId) ?? beat.durationSeconds,
+    })),
+  });
+
+  const subtitleCues: StoryboardSubtitleCue[] = adjustedStoryboard.beats
     .filter((beat) => spokenBeatIds.has(beat.beatId))
     .flatMap((beat) => beat.subtitleCues ?? []);
 
@@ -457,6 +462,7 @@ export async function buildNarrationTrack(params: {
       error: errors[0] ?? "Generated narration was unavailable for every beat.",
       spokenSegmentCount,
       subtitleCues: [],
+      storyboard: adjustedStoryboard,
       modelUsed: null,
       audioComposition: composition,
     };
@@ -471,7 +477,7 @@ export async function buildNarrationTrack(params: {
     narration: {
       status: "generated",
       spokenSegmentCount,
-      beatCount: storyboard.beats.length,
+      beatCount: adjustedStoryboard.beats.length,
       cueCount: subtitleCues.length,
       modelUsed: modelUsed[0] ?? null,
       error: errors[0] ?? null,
@@ -492,7 +498,7 @@ export async function buildNarrationTrack(params: {
     },
   };
 
-  const totalDuration = storyboard.durationSeconds ?? storyboard.beats.reduce((sum, beat) => sum + beat.durationSeconds, 0);
+  const totalDuration = adjustedStoryboard.durationSeconds ?? adjustedStoryboard.beats.reduce((sum, beat) => sum + beat.durationSeconds, 0);
 
   if (backgroundMusicSourcePath) {
     const loopedMusicPath = path.join(outputDir, "background-music.loop.wav");
@@ -527,7 +533,7 @@ export async function buildNarrationTrack(params: {
   }
 
   if (transitionSfxEnabled && transitionSfxSourcePath) {
-    const eventTimes = storyboard.beats
+    const eventTimes = adjustedStoryboard.beats
       .slice(0, -1)
       .map((beat) => Math.max(0, (beat.timelineEndSeconds ?? 0) - 0.12))
       .filter((eventTime) => Number.isFinite(eventTime));
@@ -573,6 +579,7 @@ export async function buildNarrationTrack(params: {
     error: errors[0] ?? null,
     spokenSegmentCount,
     subtitleCues,
+    storyboard: adjustedStoryboard,
     modelUsed: modelUsed[0] ?? null,
     audioComposition: composition,
   };
