@@ -18,9 +18,11 @@ const idea: Idea = {
 
 describe("storyboard helpers", () => {
   const originalGeneratedSupport = process.env.ENABLE_GENERATED_SUPPORT_MEDIA;
+  const originalGeneratedSupportMode = process.env.GENERATED_SUPPORT_MEDIA_MODE;
 
   beforeEach(() => {
     delete process.env.ENABLE_GENERATED_SUPPORT_MEDIA;
+    delete process.env.GENERATED_SUPPORT_MEDIA_MODE;
   });
 
   afterEach(() => {
@@ -28,6 +30,12 @@ describe("storyboard helpers", () => {
       delete process.env.ENABLE_GENERATED_SUPPORT_MEDIA;
     } else {
       process.env.ENABLE_GENERATED_SUPPORT_MEDIA = originalGeneratedSupport;
+    }
+
+    if (originalGeneratedSupportMode === undefined) {
+      delete process.env.GENERATED_SUPPORT_MEDIA_MODE;
+    } else {
+      process.env.GENERATED_SUPPORT_MEDIA_MODE = originalGeneratedSupportMode;
     }
   });
 
@@ -45,6 +53,7 @@ describe("storyboard helpers", () => {
 
   it("plans generated supporting visuals for weak beats when generation is enabled", () => {
     process.env.ENABLE_GENERATED_SUPPORT_MEDIA = "true";
+    process.env.GENERATED_SUPPORT_MEDIA_MODE = "video";
 
     const beats = storyboardTestUtils.buildBeats({
       trend,
@@ -109,6 +118,7 @@ describe("storyboard helpers", () => {
     expect(finalized.generatedSupportUsed).toBe(true);
     expect(finalized.beats.some((beat) => beat.mediaSource === "generated")).toBe(true);
     expect(finalized.beats.find((beat) => beat.mediaSource === "generated")?.generatedVisualPrompt).toContain("Creator workflow update");
+    expect(finalized.beats.find((beat) => beat.mediaSource === "generated")?.generatedAssetPlan?.requestedKind).toBe("motion");
     expect(finalized.beats.find((beat) => beat.mediaSource === "generated")?.missingCoverageGuidance?.length).toBeGreaterThan(0);
   });
 

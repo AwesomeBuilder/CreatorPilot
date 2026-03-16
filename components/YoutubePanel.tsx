@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { RenderAudioComposition } from "@/lib/types";
 
 type YoutubeStatus = {
   connected: boolean;
@@ -39,6 +40,7 @@ type YoutubePanelProps = {
   variants: RenderVariantOption[];
   audioStatus: "generated" | "missing" | null;
   audioError: string | null;
+  audioComposition: RenderAudioComposition | null;
   onConnect: () => void;
   onUpload: (payload: { renderId: string; publishAt?: string }) => void;
   isUploading: boolean;
@@ -51,6 +53,7 @@ export function YoutubePanel({
   variants,
   audioStatus,
   audioError,
+  audioComposition,
   onConnect,
   onUpload,
   isUploading,
@@ -145,6 +148,23 @@ export function YoutubePanel({
               <p className={`text-[11px] ${selectedVariant.hasAudio === false ? "text-[var(--cp-error)]" : "text-[var(--cp-muted)]"}`}>
                 Audio: {selectedVariant.hasAudio === false ? "missing" : audioStatus === "generated" ? "generated narration included" : "available or unknown"}
               </p>
+              {audioComposition ? (
+                <div className="rounded-lg border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-3 py-3 text-[11px] text-[var(--cp-muted)]">
+                  <p className="font-medium text-[var(--cp-ink)]">Audio composition</p>
+                  <p className="mt-1">{audioComposition.summary}</p>
+                  <p className="mt-2">
+                    Narration: {audioComposition.narration.status} · {audioComposition.narration.spokenSegmentCount}/{audioComposition.narration.beatCount} beats voiced
+                  </p>
+                  <p>
+                    Music: {audioComposition.backgroundMusic.status}
+                    {audioComposition.backgroundMusic.sourcePath ? ` · ${audioComposition.backgroundMusic.sourcePath}` : ""}
+                  </p>
+                  <p>
+                    Transition SFX: {audioComposition.transitionSfx.status}
+                    {audioComposition.transitionSfx.eventCount ? ` · ${audioComposition.transitionSfx.eventCount} hit${audioComposition.transitionSfx.eventCount === 1 ? "" : "s"}` : ""}
+                  </p>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

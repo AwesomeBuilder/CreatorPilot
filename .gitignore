@@ -48,3 +48,7 @@ renders/*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local backup copies
+lib/render 2.ts
+lib/media-relevance 2.ts

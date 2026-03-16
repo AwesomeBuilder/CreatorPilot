@@ -5,13 +5,15 @@ import { existsSync } from "node:fs";
 
 import { z } from "zod";
 
+import { applyStoryboardEditorialTiming } from "@/lib/editorial";
 import { createGeneratedSupportingImageDetailed } from "@/lib/generated-media";
 import { ensureFfmpegInstalled, FFMPEG_BIN, isImagePath, probeMedia, runBinary } from "@/lib/ffmpeg";
 import { llmChatJSONWithUserContentDetailed } from "@/lib/llm";
-import { generatedSupportEnabled, multimodalStoryboardAnalysisEnabled } from "@/lib/media-flags";
+import { generatedSupportEnabled, generatedSupportMediaMode, multimodalStoryboardAnalysisEnabled } from "@/lib/media-flags";
 import type {
   BeatPurpose,
   CoverageLevel,
+  GeneratedVisualKind,
   Idea,
   MediaAnalysisCandidate,
   MediaRelevanceAssessment,
@@ -46,6 +48,19 @@ const CropWindowSchema = z.object({
   width: z.number().min(0.1).max(1),
   height: z.number().min(0.1).max(1),
   label: z.string().optional(),
+});
+
+const GeneratedAssetPlanSchema = z.object({
+  requestedKind: z.enum(["still", "motion"]),
+  resolvedKind: z.enum(["still", "motion"]).optional(),
+  status: z.enum(["planned", "generated", "unavailable", "not-needed"]),
+  provider: z.enum(["gemini-image", "gemini-video", "stub"]),
+  prompt: z.string().min(1),
+  assetPath: z.string().nullable().optional(),
+  previewPath: z.string().nullable().optional(),
+  fallbackAssetPath: z.string().nullable().optional(),
+  degradedFrom: z.enum(["still", "motion"]).optional(),
+  error: z.string().nullable().optional(),
 });
 
 const CandidateVisionRawSchema = z.object({
@@ -90,6 +105,7 @@ const StoryboardBeatSchema = z.object({
   generatedVisualPrompt: z.string().optional(),
   generatedVisualStatus: z.enum(["planned", "generated", "unavailable", "not-needed"]).optional(),
   generatedPreviewPath: z.string().nullable().optional(),
+  generatedAssetPlan: GeneratedAssetPlanSchema.optional(),
   supportingVisuals: z
     .array(
       z.object({
@@ -105,6 +121,7 @@ const StoryboardBeatSchema = z.object({
         generatedVisualPrompt: z.string().optional(),
         generatedVisualStatus: z.enum(["planned", "generated", "unavailable", "not-needed"]).optional(),
         generatedPreviewPath: z.string().nullable().optional(),
+        generatedAssetPlan: GeneratedAssetPlanSchema.optional(),
       }),
     )
     .default([]),
@@ -778,6 +795,24 @@ function generatedPrompt(params: { trend: Trend; idea: Idea; beat: StoryboardBea
   );
 }
 
+function generatedAssetKind(): GeneratedVisualKind {
+  return generatedSupportMediaMode() === "video" ? "motion" : "still";
+}
+
+function buildGeneratedAssetPlan(prompt: string) {
+  const requestedKind = generatedAssetKind();
+  return {
+    requestedKind,
+    status: "planned" as const,
+    provider: requestedKind === "motion" ? ("gemini-video" as const) : ("gemini-image" as const),
+    prompt,
+    assetPath: null,
+    previewPath: null,
+    fallbackAssetPath: null,
+    error: null,
+  };
+}
+
 function candidateTokens(candidate: MediaAnalysisCandidate) {
   return tokenize(
     [
@@ -840,6 +875,12 @@ function supportingVisualFromCandidate(candidate: MediaAnalysisCandidate): Story
 }
 
 function generatedSupportingVisual(params: { beat: StoryboardBeat; trend: Trend; idea: Idea; format: RenderFormat }): StoryboardSupportingVisual {
+  const prompt = generatedPrompt({
+    trend: params.trend,
+    idea: params.idea,
+    beat: params.beat,
+    format: params.format,
+  });
   return {
     visualId: `${params.beat.beatId}:generated-support`,
     assetId: null,
@@ -847,14 +888,10 @@ function generatedSupportingVisual(params: { beat: StoryboardBeat; trend: Trend;
     assetType: "generated",
     mediaSource: "generated",
     label: `${params.beat.title} generated support`,
-    generatedVisualPrompt: generatedPrompt({
-      trend: params.trend,
-      idea: params.idea,
-      beat: params.beat,
-      format: params.format,
-    }),
+    generatedVisualPrompt: prompt,
     generatedVisualStatus: "planned",
     generatedPreviewPath: null,
+    generatedAssetPlan: buildGeneratedAssetPlan(prompt),
   };
 }
 
@@ -979,6 +1016,12 @@ function finalizeBeats(params: {
     const analysisNote = best?.analysisMode === "heuristic" ? best.diagnosticMessage : undefined;
 
     if (shouldGenerate) {
+      const prompt = generatedPrompt({
+        trend: params.trend,
+        idea: params.idea,
+        beat,
+        format: params.format,
+      });
       return {
         ...beat,
         coverageLevel,
@@ -997,14 +1040,10 @@ function finalizeBeats(params: {
         analysisNote,
         missingCoverageNote: bestAvailableCandidateNote(best),
         missingCoverageGuidance: guidance,
-        generatedVisualPrompt: generatedPrompt({
-          trend: params.trend,
-          idea: params.idea,
-          beat,
-          format: params.format,
-        }),
+        generatedVisualPrompt: prompt,
         generatedVisualStatus: "planned" as const,
         generatedPreviewPath: null,
+        generatedAssetPlan: buildGeneratedAssetPlan(prompt),
         supportingVisuals: best ? [supportingVisualFromCandidate(best)] : [],
       };
     }
@@ -1177,7 +1216,7 @@ export async function buildStoryboardPlan(params: {
   preference?: RenderPreference;
 }): Promise<StoryboardPlan> {
   if (params.assets.length === 0) {
-    return {
+    return applyStoryboardEditorialTiming({
       format: "shorts",
       coverageScore: 0,
       coverageSummary: "No uploaded media is available yet.",
@@ -1196,7 +1235,7 @@ export async function buildStoryboardPlan(params: {
         idea: params.idea,
         format: "shorts",
       }),
-    };
+    });
   }
 
   await ensureFfmpegInstalled();
@@ -1238,22 +1277,24 @@ export async function buildStoryboardPlan(params: {
       candidates,
     });
 
-    return StoryboardPlanSchema.parse({
-      format: pickedFormat.format,
-      coverageScore: finalized.coverageScore,
-      coverageSummary: finalized.coverageSummary,
-      shouldBlock: finalized.shouldBlock,
-      requiresMoreRelevantMedia: finalized.requiresMoreRelevantMedia,
-      generatedSupportEnabled: finalized.generatedSupportEnabled,
-      generatedSupportUsed: finalized.generatedSupportUsed,
-      recommendedUploads: recommendedUploadsFromBeats(finalized.beats),
-      diagnostics: buildStoryboardDiagnostics({
+    return applyStoryboardEditorialTiming(
+      StoryboardPlanSchema.parse({
+        format: pickedFormat.format,
+        coverageScore: finalized.coverageScore,
+        coverageSummary: finalized.coverageSummary,
+        shouldBlock: finalized.shouldBlock,
+        requiresMoreRelevantMedia: finalized.requiresMoreRelevantMedia,
+        generatedSupportEnabled: finalized.generatedSupportEnabled,
+        generatedSupportUsed: finalized.generatedSupportUsed,
+        recommendedUploads: recommendedUploadsFromBeats(finalized.beats),
+        diagnostics: buildStoryboardDiagnostics({
+          candidates,
+        }),
+        assetSummaries: assets.map((asset, index) => summarizeAsset(asset, candidateGroups[index] ?? [])),
         candidates,
+        beats: finalized.beats,
       }),
-      assetSummaries: assets.map((asset, index) => summarizeAsset(asset, candidateGroups[index] ?? [])),
-      candidates,
-      beats: finalized.beats,
-    });
+    );
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -1291,6 +1332,13 @@ export async function hydrateStoryboardGeneratedPreviews(params: {
             generatedPreviewPath: previewResult.path,
             selectedAssetPath: previewResult.path,
             assetType: "generated",
+            generatedAssetPlan: hydratedBeat.generatedAssetPlan
+              ? {
+                  ...hydratedBeat.generatedAssetPlan,
+                  previewPath: previewResult.path,
+                  error: null,
+                }
+              : hydratedBeat.generatedAssetPlan,
           };
         } else {
           const failureReason = previewResult.error ?? `Preview generation failed for "${beat.title}".`;
@@ -1301,6 +1349,13 @@ export async function hydrateStoryboardGeneratedPreviews(params: {
             generatedPreviewPath: null,
             generatedVisualStatus: "unavailable",
             analysisNote: failureReason,
+            generatedAssetPlan: hydratedBeat.generatedAssetPlan
+              ? {
+                  ...hydratedBeat.generatedAssetPlan,
+                  status: "unavailable",
+                  error: failureReason,
+                }
+              : hydratedBeat.generatedAssetPlan,
           };
         }
       }
@@ -1335,6 +1390,13 @@ export async function hydrateStoryboardGeneratedPreviews(params: {
           assetPath: previewResult.path,
           generatedPreviewPath: previewResult.path,
           generatedVisualStatus: "generated",
+          generatedAssetPlan: visual.generatedAssetPlan
+            ? {
+                ...visual.generatedAssetPlan,
+                previewPath: previewResult.path,
+                error: null,
+              }
+            : visual.generatedAssetPlan,
         });
         continue;
       }
@@ -1346,6 +1408,13 @@ export async function hydrateStoryboardGeneratedPreviews(params: {
         ...visual,
         generatedPreviewPath: null,
         generatedVisualStatus: "unavailable",
+        generatedAssetPlan: visual.generatedAssetPlan
+          ? {
+              ...visual.generatedAssetPlan,
+              status: "unavailable",
+              error: failureReason,
+            }
+          : visual.generatedAssetPlan,
       });
     }
 
@@ -1355,15 +1424,17 @@ export async function hydrateStoryboardGeneratedPreviews(params: {
     });
   }
 
-  return StoryboardPlanSchema.parse({
-    ...params.storyboard,
-    beats,
-    diagnostics: buildStoryboardDiagnostics({
-      candidates: params.storyboard.candidates,
-      generatedPreviewCount,
-      generatedPreviewFailureReasons: failureReasons,
+  return applyStoryboardEditorialTiming(
+    StoryboardPlanSchema.parse({
+      ...params.storyboard,
+      beats,
+      diagnostics: buildStoryboardDiagnostics({
+        candidates: params.storyboard.candidates,
+        generatedPreviewCount,
+        generatedPreviewFailureReasons: failureReasons,
+      }),
     }),
-  });
+  );
 }
 
 export function storyboardPlanToAssessment(plan: StoryboardPlan): MediaRelevanceAssessment {
