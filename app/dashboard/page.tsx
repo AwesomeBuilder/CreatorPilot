@@ -1500,10 +1500,10 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-[260px_1fr]">
+      <div className="grid gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
         <StepSidebar steps={steps} activeStep={activeStep} onSelect={setActiveStep} />
 
-        <Card className="border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 shadow-sm ring-0">
+        <Card className="min-w-0 border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 shadow-sm ring-0">
           <CardContent className="p-4">
             {message ? <p className="mb-3 rounded-md bg-[var(--cp-success-bg)] p-2 text-sm text-[var(--cp-success)]">{message}</p> : null}
             {error ? <p className="mb-3 rounded-md bg-[var(--cp-error-bg)] p-2 text-sm text-[var(--cp-error)]">{error}</p> : null}

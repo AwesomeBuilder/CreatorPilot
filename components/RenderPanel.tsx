@@ -275,9 +275,9 @@ export function RenderPanel({
   };
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-        <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
+      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="min-w-0 space-y-4">
           <Card className="border-[var(--cp-border)] py-0 ring-0">
             <CardContent className="space-y-4 p-4">
               <div>
@@ -356,7 +356,7 @@ export function RenderPanel({
           {error ? <p className="text-xs text-[var(--cp-error)]">{error}</p> : null}
         </div>
 
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           {!previewStoryboard ? (
             <Card className="border-[var(--cp-border)] py-0 ring-0">
               <CardContent className="p-4 text-sm text-[var(--cp-muted)]">
@@ -454,7 +454,7 @@ export function RenderPanel({
                   ) : null}
 
                   {previewStoryboard.assetSummaries.length > 0 ? (
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-sm font-semibold text-[var(--cp-ink)]">Asset coverage snapshot</p>
                       <div className="mt-2 grid gap-2 xl:grid-cols-2">
                         {previewStoryboard.assetSummaries.map((asset) => (
@@ -480,7 +480,7 @@ export function RenderPanel({
 
               <div className="grid gap-4 xl:grid-cols-2">
                 {previewStoryboard.beats.map((beat) => (
-                  <Card key={beat.beatId} className="border-[var(--cp-border)] py-0 ring-0">
+                  <Card key={beat.beatId} className="min-w-0 border-[var(--cp-border)] py-0 ring-0">
                     <CardContent className="space-y-3 p-4">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full border border-[var(--cp-border)] px-2.5 py-1 text-xs font-semibold text-[var(--cp-ink)]">
@@ -528,13 +528,15 @@ export function RenderPanel({
                         ) : null}
                         {beat.analysisNote ? <p className="text-[11px] text-[var(--cp-warning)]">Analysis note: {beat.analysisNote}</p> : null}
                         {beat.mediaSource === "user" && beat.selectedAssetPath ? (
-                          <p className="text-[11px] text-[var(--cp-muted-dim)]">
+                          <p className="break-all text-[11px] text-[var(--cp-muted-dim)]">
                             Source: {beat.selectedAssetPath}
                             {timeRange(beat) ? ` · ${timeRange(beat)}` : ""}
                             {beat.cropWindow?.label ? ` · ${beat.cropWindow.label}` : ""}
                           </p>
                         ) : null}
-                        {beat.mediaSource === "generated" && beat.generatedVisualPrompt ? <p className="text-[11px] text-[var(--cp-muted-dim)]">Prompt: {beat.generatedVisualPrompt}</p> : null}
+                        {beat.mediaSource === "generated" && beat.generatedVisualPrompt ? (
+                          <p className="break-words text-[11px] text-[var(--cp-muted-dim)]">Prompt: {beat.generatedVisualPrompt}</p>
+                        ) : null}
                         {beat.generatedAssetPlan ? (
                           <p className="text-[11px] text-[var(--cp-muted-dim)]">
                             Generated asset plan: {beat.generatedAssetPlan.requestedKind}
