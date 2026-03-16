@@ -7,11 +7,15 @@ const routeMocks = vi.hoisted(() => ({
     mediaAsset: {
       findMany: vi.fn(),
     },
+    job: {
+      update: vi.fn(),
+    },
     render: {
       create: vi.fn(),
     },
     $transaction: vi.fn(),
   },
+  appendJobLog: vi.fn(),
   createJob: vi.fn(),
   runJobInBackground: vi.fn(),
   renderVideoVariants: vi.fn(),
@@ -25,6 +29,7 @@ vi.mock("@/lib/db", () => ({
 }));
 
 vi.mock("@/lib/jobs", () => ({
+  appendJobLog: routeMocks.appendJobLog,
   createJob: routeMocks.createJob,
   runJobInBackground: routeMocks.runJobInBackground,
 }));
@@ -196,9 +201,12 @@ function makeStoryboard(overrides?: Partial<StoryboardPlan>): StoryboardPlan {
 
 describe("POST /api/render", () => {
   beforeEach(() => {
+    delete process.env.RUN_RENDER_JOBS_INLINE;
     routeMocks.prisma.mediaAsset.findMany.mockReset();
+    routeMocks.prisma.job.update.mockReset();
     routeMocks.prisma.render.create.mockReset();
     routeMocks.prisma.$transaction.mockReset();
+    routeMocks.appendJobLog.mockReset();
     routeMocks.createJob.mockReset();
     routeMocks.runJobInBackground.mockReset();
     routeMocks.renderVideoVariants.mockReset();
@@ -401,6 +409,86 @@ describe("POST /api/render", () => {
         { variantIndex: 2, path: "/tmp/out-2.mp4", duration: 12 },
         { variantIndex: 3, path: "/tmp/out-3.mp4", duration: 12 },
       ],
+    });
+  });
+
+  it("can run the render inline when RUN_RENDER_JOBS_INLINE is enabled", async () => {
+    process.env.RUN_RENDER_JOBS_INLINE = "true";
+    const storyboard = makeStoryboard();
+
+    routeMocks.createJob.mockResolvedValue({ id: "job-1", status: "queued" });
+    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }]);
+    routeMocks.storyboardPlanToAssessment.mockReturnValue({
+      status: "relevant",
+      confidence: 0.82,
+      summary: storyboard.coverageSummary,
+      matchedSignals: ["workflow", "creator"],
+      shouldBlock: false,
+      coverageScore: 78,
+      requiresGeneratedSupport: false,
+    });
+    routeMocks.prisma.job.update.mockResolvedValue(undefined);
+    routeMocks.appendJobLog.mockResolvedValue(undefined);
+    routeMocks.prisma.render.create.mockReturnValueOnce("render-query-1");
+    routeMocks.prisma.$transaction.mockResolvedValue(undefined);
+    routeMocks.renderVideoVariants.mockResolvedValue({
+      format: "shorts",
+      reason: storyboard.coverageSummary,
+      storyboard,
+      variants: [{ variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 }],
+      audioStatus: "missing",
+      audioError: "Generated narration is disabled by RENDER_ENABLE_GENERATED_NARRATION.",
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/render", {
+        method: "POST",
+        body: JSON.stringify({
+          trend,
+          idea,
+          mediaAssetIds: ["asset-1"],
+          preference: "shorts",
+          storyboard,
+        }),
+      }),
+    );
+
+    expect(await response.json()).toEqual({ jobId: "job-1", status: "complete" });
+    expect(routeMocks.runJobInBackground).not.toHaveBeenCalled();
+    expect(routeMocks.prisma.job.update).toHaveBeenNthCalledWith(1, {
+      where: { id: "job-1" },
+      data: { status: "running" },
+    });
+    expect(routeMocks.prisma.job.update).toHaveBeenNthCalledWith(2, {
+      where: { id: "job-1" },
+      data: {
+        status: "complete",
+        outputJson: JSON.stringify({
+          format: "shorts",
+          reason: storyboard.coverageSummary,
+          storyboard,
+          variants: [{ variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 }],
+          audioStatus: "missing",
+          audioError: "Generated narration is disabled by RENDER_ENABLE_GENERATED_NARRATION.",
+        }),
+      },
+    });
+    expect(routeMocks.renderVideoVariants).toHaveBeenCalledWith({
+      userId: "user-1",
+      jobId: "job-1",
+      title: idea.videoTitle,
+      storyboard: expect.objectContaining({
+        ...storyboard,
+        beats: expect.arrayContaining(
+          storyboard.beats.map((beat) =>
+            expect.objectContaining({
+              ...beat,
+              supportingVisuals: expect.any(Array),
+            }),
+          ),
+        ),
+      }),
     });
   });
 });

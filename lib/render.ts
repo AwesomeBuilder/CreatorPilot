@@ -100,8 +100,22 @@ function resolveFontFile(candidates: string[]) {
 const DISPLAY_FONT_FILE = resolveFontFile(DISPLAY_FONT_CANDIDATES);
 const BODY_FONT_FILE = resolveFontFile(BODY_FONT_CANDIDATES);
 
-function drawtextFontOption(fontPath: string | null) {
-  return fontPath ? `:fontfile='${escapeFilterValue(fontPath)}'` : "";
+function requireFontFile(fontPath: string | null, role: "display" | "body") {
+  if (fontPath) {
+    return fontPath;
+  }
+
+  const candidates = role === "display" ? DISPLAY_FONT_CANDIDATES : BODY_FONT_CANDIDATES;
+  throw new Error(`Render ${role} font file is unavailable. Install one of: ${candidates.join(", ")}`);
+}
+
+function ensureRenderFontsAvailable() {
+  requireFontFile(DISPLAY_FONT_FILE, "display");
+  requireFontFile(BODY_FONT_FILE, "body");
+}
+
+function drawtextFontOption(fontPath: string | null, role: "display" | "body") {
+  return `:fontfile='${escapeFilterValue(requireFontFile(fontPath, role))}'`;
 }
 
 function escapeFilterValue(value: string) {
@@ -328,6 +342,8 @@ async function muxAudioTrack(params: {
     "aac",
     "-b:a",
     "192k",
+    "-movflags",
+    "+faststart",
     "-shortest",
     params.outputPath,
   ]);
@@ -386,8 +402,8 @@ function buildBeatIntroFilter(params: {
     editorialSurfaceFilters(params.layout, params.style),
     `drawbox=x=${params.layout.titleX}:y=${params.layout.titleY}:w=${params.layout.titleBoxW}:h=${params.layout.titleBoxH}:color=${params.style.titleChip}@0.78:t=fill:enable='between(t,0,${titleDuration})'`,
     `drawbox=x=${params.layout.titleX + 20}:y=${params.layout.titleY + 16}:w=6:h=${params.layout.titleBoxH - 32}:color=${params.style.accentColor}@1:t=fill:enable='between(t,0,${titleDuration})'`,
-    `drawtext=textfile='${escapeFilterValue(params.labelFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE)}:fontcolor=${params.style.panelStroke}:fontsize=${params.layout.labelFontSize}:x=${params.layout.titleX + 40}:y=${params.layout.titleY + params.layout.titleLabelYOffset}:fix_bounds=1:enable='between(t,0,${titleDuration})'`,
-    `drawtext=textfile='${escapeFilterValue(params.titleFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE)}:fontcolor=white:fontsize=${params.layout.titleFontSize}:x=${params.layout.titleX + 40}:y=${params.layout.titleY + params.layout.titleTextYOffset}:line_spacing=8:fix_bounds=1:enable='between(t,0,${titleDuration})'`,
+    `drawtext=textfile='${escapeFilterValue(params.labelFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE, "display")}:fontcolor=${params.style.panelStroke}:fontsize=${params.layout.labelFontSize}:x=${params.layout.titleX + 40}:y=${params.layout.titleY + params.layout.titleLabelYOffset}:fix_bounds=1:enable='between(t,0,${titleDuration})'`,
+    `drawtext=textfile='${escapeFilterValue(params.titleFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE, "display")}:fontcolor=white:fontsize=${params.layout.titleFontSize}:x=${params.layout.titleX + 40}:y=${params.layout.titleY + params.layout.titleTextYOffset}:line_spacing=8:fix_bounds=1:enable='between(t,0,${titleDuration})'`,
     `fade=t=in:st=0:d=${FADE_DURATION}`,
     `fade=t=out:st=${Math.max(0.1, params.beat.durationSeconds - FADE_DURATION)}:d=${FADE_DURATION}`,
   ].join(",");
@@ -421,7 +437,7 @@ async function createSyntheticClip(params: {
             titleFilePath,
             labelFilePath,
           }),
-          `drawtext=textfile='${escapeFilterValue(statementFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE)}:fontcolor=white:fontsize=${Math.round(params.layout.subtitleFontSize * 1.02)}:x=${Math.round(params.layout.width * 0.14)}:y=${Math.round(params.layout.height * 0.44)}:line_spacing=${params.layout.subtitleLineSpacing}:fix_bounds=1`,
+          `drawtext=textfile='${escapeFilterValue(statementFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE, "display")}:fontcolor=white:fontsize=${Math.round(params.layout.subtitleFontSize * 1.02)}:x=${Math.round(params.layout.width * 0.14)}:y=${Math.round(params.layout.height * 0.44)}:line_spacing=${params.layout.subtitleLineSpacing}:fix_bounds=1`,
           `fade=t=in:st=0:d=${FADE_DURATION}`,
           `fade=t=out:st=${Math.max(0.1, params.beat.durationSeconds - FADE_DURATION)}:d=${FADE_DURATION}`,
         ].join(",");
@@ -981,7 +997,7 @@ async function applyTimedSubtitles(params: {
         `drawbox=x=${params.layout.subtitleX}:y=${params.layout.subtitleY}:w=${params.layout.subtitleBoxW}:h=4:color=${params.style.accentColor}@0.92:t=fill:enable='${enableExpr}'`,
       );
       filterParts.push(
-        `drawtext=textfile='${escapeFilterValue(textFilePath)}':expansion=none${drawtextFontOption(BODY_FONT_FILE)}:fontcolor=white:fontsize=${params.layout.subtitleFontSize}:x=(w-text_w)/2:y=${textY}:line_spacing=${params.layout.subtitleLineSpacing}:fix_bounds=1:shadowcolor=0x020617@1:shadowx=0:shadowy=4:alpha='${alphaExpr}':enable='${enableExpr}'`,
+        `drawtext=textfile='${escapeFilterValue(textFilePath)}':expansion=none${drawtextFontOption(BODY_FONT_FILE, "body")}:fontcolor=white:fontsize=${params.layout.subtitleFontSize}:x=(w-text_w)/2:y=${textY}:line_spacing=${params.layout.subtitleLineSpacing}:fix_bounds=1:shadowcolor=0x020617@1:shadowx=0:shadowy=4:alpha='${alphaExpr}':enable='${enableExpr}'`,
       );
     }
 
@@ -1005,6 +1021,8 @@ async function applyTimedSubtitles(params: {
       "veryfast",
       "-pix_fmt",
       "yuv420p",
+      "-movflags",
+      "+faststart",
       params.outputPath,
     ]);
   } finally {
@@ -1020,6 +1038,7 @@ export async function renderVideoVariants(params: {
   storyboard: StoryboardPlan;
 }): Promise<RenderOutput> {
   await ensureFfmpegInstalled();
+  ensureRenderFontsAvailable();
 
   const outputDir = path.join(process.cwd(), "renders", params.userId, params.jobId);
   await ensureDir(outputDir);
@@ -1105,6 +1124,7 @@ export async function renderVideoVariants(params: {
 
 export const renderTestUtils = {
   escapeFilterValue,
+  requireFontFile,
   sanitizeOverlayText,
   wrapOverlayText,
   pickFormat,

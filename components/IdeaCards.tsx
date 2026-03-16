@@ -8,11 +8,12 @@ type IdeaCardsProps = {
   ideas: Idea[];
   selectedIndex: number;
   onSelect: (index: number) => void;
+  emptyText?: string;
 };
 
-export function IdeaCards({ ideas, selectedIndex, onSelect }: IdeaCardsProps) {
+export function IdeaCards({ ideas, selectedIndex, onSelect, emptyText }: IdeaCardsProps) {
   if (ideas.length === 0) {
-    return <p className="text-sm text-[var(--cp-muted-soft)]">No ideas yet. Select a trend and run Generate ideas.</p>;
+    return <p className="text-sm text-[var(--cp-muted-soft)]">{emptyText ?? "No ideas yet. Select a trend and run Generate ideas."}</p>;
   }
 
   return (

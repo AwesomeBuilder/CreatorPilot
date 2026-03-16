@@ -303,12 +303,56 @@ function summarizeAudioComposition(composition: RenderAudioComposition) {
   return summaryParts.join(" ");
 }
 
+function narrationGenerationEnabled() {
+  return process.env.RENDER_ENABLE_GENERATED_NARRATION !== "false";
+}
+
 export async function buildNarrationTrack(params: {
   userId: string;
   jobId: string;
   storyboard: StoryboardPlan;
 }) {
   const storyboard = applyStoryboardEditorialTiming(params.storyboard);
+
+  if (!narrationGenerationEnabled()) {
+    const composition: RenderAudioComposition = {
+      summary: "",
+      narration: {
+        status: "disabled",
+        spokenSegmentCount: 0,
+        beatCount: storyboard.beats.length,
+        cueCount: 0,
+        modelUsed: null,
+        error: "Generated narration is disabled by RENDER_ENABLE_GENERATED_NARRATION.",
+      },
+      backgroundMusic: {
+        status: "disabled",
+        sourcePath: null,
+        gainDb: resolveNumericEnv("RENDER_BACKGROUND_MUSIC_GAIN_DB", -22),
+        duckingDb: resolveNumericEnv("RENDER_BACKGROUND_MUSIC_DUCK_DB", 14),
+        error: null,
+      },
+      transitionSfx: {
+        status: "disabled",
+        sourcePath: null,
+        eventCount: 0,
+        gainDb: resolveNumericEnv("RENDER_TRANSITION_SFX_GAIN_DB", -18),
+        error: null,
+      },
+    };
+    composition.summary = summarizeAudioComposition(composition);
+
+    return {
+      path: null,
+      narrationPath: null,
+      error: "Generated narration is disabled by RENDER_ENABLE_GENERATED_NARRATION.",
+      spokenSegmentCount: 0,
+      subtitleCues: [],
+      modelUsed: null,
+      audioComposition: composition,
+    };
+  }
+
   const outputDir = path.join(process.cwd(), "renders", params.userId, params.jobId, "audio");
   await ensureDir(outputDir);
 

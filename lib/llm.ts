@@ -7,6 +7,9 @@ const DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 const DEFAULT_TTS_MODEL = "gemini-2.5-pro-preview-tts";
 const DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview";
 const DEFAULT_TTS_VOICE = "Kore";
+const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+const DEFAULT_MEDIA_TIMEOUT_MS = 45_000;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 60_000;
 const HARD_PROMPT_CHAR_THRESHOLD = 24_000;
 const HARD_PROMPT_SOURCE_THRESHOLD = 12;
 const VIDEO_POLL_INTERVAL_MS = 10_000;
@@ -187,11 +190,9 @@ async function requestCompletion(params: {
   userContent: string | ChatContentPart[];
   temperature: number;
 }) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
-
-  try {
-    return await fetch(`${params.baseUrl}/chat/completions`, {
+  return fetchWithTimeout(
+    `${params.baseUrl}/chat/completions`,
+    {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -211,11 +212,9 @@ async function requestCompletion(params: {
           },
         ],
       }),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+    },
+    DEFAULT_HTTP_TIMEOUT_MS,
+  );
 }
 
 async function readResponseText(response: Response) {
@@ -228,6 +227,45 @@ async function readResponseText(response: Response) {
 
 function shortenErrorMessage(message: string) {
   return message.replace(/\s+/g, " ").trim().slice(0, 220);
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function timeoutMessage(action: string, model: string) {
+  return `${action} timed out for ${model}.`;
+}
+
+function describeRequestFailure(params: {
+  error: unknown;
+  action: string;
+  model: string;
+  fallback: string;
+}) {
+  if (isAbortError(params.error)) {
+    return timeoutMessage(params.action, params.model);
+  }
+
+  if (params.error instanceof Error) {
+    return shortenErrorMessage(`${params.action} failed for ${params.model}: ${params.error.message}`);
+  }
+
+  return params.fallback;
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function sleep(ms: number) {
@@ -295,7 +333,7 @@ async function requestGeminiNativeImage(params: {
   prompt: string;
   size: "1024x1024" | "1536x1024" | "1024x1536";
 }) {
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(params.model)}:generateContent?key=${encodeURIComponent(params.apiKey)}`,
     {
       method: "POST",
@@ -320,6 +358,7 @@ async function requestGeminiNativeImage(params: {
         },
       }),
     },
+    DEFAULT_MEDIA_TIMEOUT_MS,
   );
 
   if (!response.ok) {
@@ -499,10 +538,12 @@ export async function llmChatJSONWithUserContentDetailed<T>(params: {
         lastPreview = summarizeResponsePreview(cleaned);
       }
     } catch (error) {
-      lastError =
-        error instanceof Error
-          ? shortenErrorMessage(`Model ${model} request failed: ${error.message}`)
-          : `Model ${model} request failed during structured analysis.`;
+      lastError = describeRequestFailure({
+        error,
+        action: "Model request",
+        model,
+        fallback: `Model ${model} request failed during structured analysis.`,
+      });
       lastPreview = null;
       continue;
     }
@@ -544,20 +585,24 @@ export async function llmGenerateImageDetailed(params: {
 
   for (const model of candidateModels) {
     try {
-      const response = await fetch(`${baseUrl}/images/generations`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+      const response = await fetchWithTimeout(
+        `${baseUrl}/images/generations`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            prompt: params.prompt,
+            size: requestedSize,
+            n: 1,
+            response_format: "b64_json",
+          }),
         },
-        body: JSON.stringify({
-          model,
-          prompt: params.prompt,
-          size: requestedSize,
-          n: 1,
-          response_format: "b64_json",
-        }),
-      });
+        DEFAULT_MEDIA_TIMEOUT_MS,
+      );
 
       if (!response.ok) {
         lastError = extractApiError(await readResponseText(response), response.status, model);
@@ -576,7 +621,7 @@ export async function llmGenerateImageDetailed(params: {
       }
 
       if (image?.url) {
-        const imageResponse = await fetch(image.url);
+        const imageResponse = await fetchWithTimeout(image.url, {}, DEFAULT_DOWNLOAD_TIMEOUT_MS);
         if (!imageResponse.ok) {
           lastError = `Generated image URL fetch failed with HTTP ${imageResponse.status}.`;
           continue;
@@ -592,10 +637,12 @@ export async function llmGenerateImageDetailed(params: {
 
       lastError = `Model ${model} did not return image data.`;
     } catch (error) {
-      lastError =
-        error instanceof Error
-          ? shortenErrorMessage(`Image generation request failed for ${model}: ${error.message}`)
-          : `Image generation request failed for ${model}.`;
+      lastError = describeRequestFailure({
+        error,
+        action: "Image generation request",
+        model,
+        fallback: `Image generation request failed for ${model}.`,
+      });
     }
   }
 
@@ -615,10 +662,12 @@ export async function llmGenerateImageDetailed(params: {
 
         lastError = nativeResult.error ?? lastError;
       } catch (error) {
-        lastError =
-          error instanceof Error
-            ? shortenErrorMessage(`Native Gemini image generation failed for ${model}: ${error.message}`)
-            : `Native Gemini image generation failed for ${model}.`;
+        lastError = describeRequestFailure({
+          error,
+          action: "Native Gemini image generation",
+          model,
+          fallback: `Native Gemini image generation failed for ${model}.`,
+        });
       }
     }
   }
@@ -645,7 +694,7 @@ export async function llmGenerateSpeechDetailed(params: {
   const { ttsModel, ttsVoice } = resolveModels();
 
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ttsModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
       {
         method: "POST",
@@ -674,6 +723,7 @@ export async function llmGenerateSpeechDetailed(params: {
           },
         }),
       },
+      DEFAULT_MEDIA_TIMEOUT_MS,
     );
 
     if (!response.ok) {
@@ -708,10 +758,12 @@ export async function llmGenerateSpeechDetailed(params: {
     return {
       pcmBase64: null,
       mimeType: null,
-      error:
-        error instanceof Error
-          ? shortenErrorMessage(`Speech generation request failed for ${ttsModel}: ${error.message}`)
-          : `Speech generation request failed for ${ttsModel}.`,
+      error: describeRequestFailure({
+        error,
+        action: "Speech generation request",
+        model: ttsModel,
+        fallback: `Speech generation request failed for ${ttsModel}.`,
+      }),
       modelUsed: ttsModel,
     };
   }
@@ -751,7 +803,7 @@ export async function llmGenerateVideoDetailed(params: {
   }
 
   try {
-    const operationResponse = await fetch(
+    const operationResponse = await fetchWithTimeout(
       `${apiRoot}/models/${encodeURIComponent(videoModel)}:predictLongRunning`,
       {
         method: "POST",
@@ -784,6 +836,7 @@ export async function llmGenerateVideoDetailed(params: {
           },
         }),
       },
+      DEFAULT_MEDIA_TIMEOUT_MS,
     );
 
     if (!operationResponse.ok) {
@@ -821,11 +874,15 @@ export async function llmGenerateVideoDetailed(params: {
         };
       }
 
-      const statusResponse = await fetch(`${apiRoot}/${operationName}`, {
-        headers: {
-          "x-goog-api-key": apiKey,
+      const statusResponse = await fetchWithTimeout(
+        `${apiRoot}/${operationName}`,
+        {
+          headers: {
+            "x-goog-api-key": apiKey,
+          },
         },
-      });
+        DEFAULT_HTTP_TIMEOUT_MS,
+      );
 
       if (!statusResponse.ok) {
         return {
@@ -865,11 +922,15 @@ export async function llmGenerateVideoDetailed(params: {
       };
     }
 
-    const videoResponse = await fetch(videoUri, {
-      headers: {
-        "x-goog-api-key": apiKey,
+    const videoResponse = await fetchWithTimeout(
+      videoUri,
+      {
+        headers: {
+          "x-goog-api-key": apiKey,
+        },
       },
-    });
+      DEFAULT_DOWNLOAD_TIMEOUT_MS,
+    );
 
     if (!videoResponse.ok) {
       return {
@@ -893,10 +954,12 @@ export async function llmGenerateVideoDetailed(params: {
     return {
       base64: null,
       mimeType: null,
-      error:
-        error instanceof Error
-          ? shortenErrorMessage(`Video generation request failed for ${videoModel}: ${error.message}`)
-          : `Video generation request failed for ${videoModel}.`,
+      error: describeRequestFailure({
+        error,
+        action: "Video generation request",
+        model: videoModel,
+        fallback: `Video generation request failed for ${videoModel}.`,
+      }),
       modelUsed: videoModel,
     };
   }

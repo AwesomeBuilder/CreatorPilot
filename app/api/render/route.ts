@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
-import { createJob, runJobInBackground } from "@/lib/jobs";
+import { appendJobLog, createJob, runJobInBackground } from "@/lib/jobs";
 import { renderVideoVariants } from "@/lib/render";
 import { buildStoryboardPlan, StoryboardPlanSchema, storyboardPlanToAssessment } from "@/lib/storyboard";
 import { resolveUser } from "@/lib/user";
@@ -30,6 +30,47 @@ const InputSchema = z.object({
   allowIrrelevantMedia: z.boolean().default(false),
   storyboard: StoryboardPlanSchema.optional(),
 });
+
+async function runJobInline<T>(
+  jobId: string,
+  task: (helpers: { log: (message: string) => Promise<void> }) => Promise<T>,
+) {
+  try {
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { status: "running" },
+    });
+
+    const output = await task({
+      log: async (message) => {
+        await appendJobLog(jobId, message);
+      },
+    });
+
+    await prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: "complete",
+        outputJson: JSON.stringify(output),
+      },
+    });
+
+    return "complete" as const;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown job error";
+
+    await appendJobLog(jobId, `ERROR: ${message}`);
+    await prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: "failed",
+        outputJson: JSON.stringify({ error: message }),
+      },
+    });
+
+    return "failed" as const;
+  }
+}
 
 export async function POST(req: Request) {
   const parsed = InputSchema.safeParse(await req.json());
@@ -95,7 +136,7 @@ export async function POST(req: Request) {
     logs: ["Queued render job."],
   });
 
-  runJobInBackground(job.id, async ({ log }) => {
+  const task = async ({ log }: { log: (message: string) => Promise<void> }) => {
     await log("Resolving storyboard coverage.");
     await log(`Rendering ${storyboard.beats.length} storyboard beats.`);
     if (storyboard.generatedSupportUsed) {
@@ -141,7 +182,17 @@ export async function POST(req: Request) {
     await log(`Generated ${output.variants.length} render variants.`);
 
     return output;
-  });
+  };
+
+  if (process.env.RUN_RENDER_JOBS_INLINE === "true") {
+    const status = await runJobInline(job.id, task);
+    return NextResponse.json({
+      jobId: job.id,
+      status,
+    });
+  }
+
+  runJobInBackground(job.id, task);
 
   return NextResponse.json({
     jobId: job.id,

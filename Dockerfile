@@ -17,6 +17,12 @@ RUN npm run build
 FROM base AS runner
 
 ENV NODE_ENV=production
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/bin/ffprobe
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core openssl \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
 COPY prisma ./prisma

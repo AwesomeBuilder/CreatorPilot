@@ -30,4 +30,8 @@ describe("render helpers", () => {
   it("escapes ffmpeg filter values", () => {
     expect(renderTestUtils.escapeFilterValue("a:b,c[d]'e\\f")).toBe("a\\:b\\,c\\[d\\]\\\\'e\\\\f");
   });
+
+  it("throws a clear error when no render font file is available", () => {
+    expect(() => renderTestUtils.requireFontFile(null, "display")).toThrow("Render display font file is unavailable.");
+  });
 });

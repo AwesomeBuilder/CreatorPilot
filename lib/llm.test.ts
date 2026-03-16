@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { llmChatJSON, llmChatJSONWithUserContentDetailed, llmGenerateImage, llmGenerateVideoDetailed } from "@/lib/llm";
+import { llmChatJSON, llmChatJSONWithUserContentDetailed, llmGenerateImage, llmGenerateSpeechDetailed, llmGenerateVideoDetailed } from "@/lib/llm";
 
 describe("llmChatJSON", () => {
   beforeEach(() => {
@@ -202,6 +202,24 @@ describe("llmChatJSON", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent?key=test-key",
     );
+  });
+
+  it("returns a timeout error when speech generation aborts", async () => {
+    process.env.LLM_API_KEY = "test-key";
+    process.env.LLM_TTS_MODEL = "tts-model";
+
+    const abortError = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    const fetchMock = vi.fn().mockRejectedValue(abortError);
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await llmGenerateSpeechDetailed({
+      text: "Render this narration quickly.",
+    });
+
+    expect(result.pcmBase64).toBeNull();
+    expect(result.error).toBe("Speech generation request timed out for tts-model.");
+    expect(result.modelUsed).toBe("tts-model");
   });
 
   it("includes a response preview when the model returns invalid JSON text", async () => {
