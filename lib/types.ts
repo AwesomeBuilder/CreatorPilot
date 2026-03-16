@@ -1,5 +1,6 @@
 export type JobStatus = "queued" | "running" | "complete" | "failed";
 export type TrendFitLabel = "Direct fit" | "Adjacent angle" | "Broad news" | "Open feed";
+export type WorkflowMode = "trend" | "media-led";
 
 export type TrendSourceLink = {
   url: string;
@@ -27,6 +28,22 @@ export type Idea = {
   cta: string;
 };
 
+export type IdeaGenerationMode = "single-plan" | "multi-idea" | "needs-brief";
+
+export type IdeaContextAssessment = {
+  summary: string;
+  confidence: number;
+  requiresBrief: boolean;
+  missingContextPrompts: string[];
+};
+
+export type IdeaGenerationResult = {
+  ideas: Idea[];
+  generationMode: IdeaGenerationMode;
+  contextAssessment: IdeaContextAssessment;
+  derivedContextTrend: Trend;
+};
+
 export type MetadataResult = {
   youtubeTitle: string;
   description: string;
@@ -47,6 +64,8 @@ export type MediaAssetType = "image" | "video";
 export type MediaSourceKind = "user" | "generated" | "synthetic";
 export type CoverageLevel = "strong" | "usable" | "weak" | "missing";
 export type BeatPurpose = "hook" | "context" | "proof" | "explanation" | "takeaway" | "cta";
+export type GeneratedVisualKind = "still" | "motion";
+export type GeneratedVisualProvider = "gemini-image" | "gemini-video" | "stub";
 export type NormalizedCropWindow = {
   left: number;
   top: number;
@@ -96,6 +115,39 @@ export type MediaAnalysisCandidate = {
   bestUseCases: BeatPurpose[];
 };
 
+export type StoryboardSubtitleCue = {
+  cueId: string;
+  beatId: string;
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+  startOffsetSeconds: number;
+  endOffsetSeconds: number;
+};
+
+export type StoryboardTitleOverlay = {
+  beatId: string;
+  label: string;
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+  startOffsetSeconds: number;
+  endOffsetSeconds: number;
+};
+
+export type StoryboardGeneratedAssetPlan = {
+  requestedKind: GeneratedVisualKind;
+  resolvedKind?: GeneratedVisualKind;
+  status: "planned" | "generated" | "unavailable" | "not-needed";
+  provider: GeneratedVisualProvider;
+  prompt: string;
+  assetPath?: string | null;
+  previewPath?: string | null;
+  fallbackAssetPath?: string | null;
+  degradedFrom?: GeneratedVisualKind;
+  error?: string | null;
+};
+
 export type StoryboardBeat = {
   beatId: string;
   order: number;
@@ -122,6 +174,11 @@ export type StoryboardBeat = {
   generatedVisualPrompt?: string;
   generatedVisualStatus?: "planned" | "generated" | "unavailable" | "not-needed";
   generatedPreviewPath?: string | null;
+  generatedAssetPlan?: StoryboardGeneratedAssetPlan;
+  timelineStartSeconds?: number;
+  timelineEndSeconds?: number;
+  subtitleCues?: StoryboardSubtitleCue[];
+  titleOverlay?: StoryboardTitleOverlay;
   supportingVisuals?: StoryboardSupportingVisual[];
 };
 
@@ -138,6 +195,7 @@ export type StoryboardSupportingVisual = {
   generatedVisualPrompt?: string;
   generatedVisualStatus?: "planned" | "generated" | "unavailable" | "not-needed";
   generatedPreviewPath?: string | null;
+  generatedAssetPlan?: StoryboardGeneratedAssetPlan;
 };
 
 export type StoryboardAssetSummary = {
@@ -176,6 +234,8 @@ export type StoryboardPlan = {
   assetSummaries: StoryboardAssetSummary[];
   candidates: MediaAnalysisCandidate[];
   beats: StoryboardBeat[];
+  durationSeconds?: number;
+  subtitleCues?: StoryboardSubtitleCue[];
 };
 
 export type RenderVariant = {
@@ -183,6 +243,35 @@ export type RenderVariant = {
   path: string;
   duration: number;
   hasAudio?: boolean;
+  audioSummary?: string;
+};
+
+export type RenderAudioLayerStatus = "generated" | "mixed" | "missing" | "disabled" | "unavailable" | "skipped";
+
+export type RenderAudioComposition = {
+  summary: string;
+  narration: {
+    status: RenderAudioLayerStatus;
+    spokenSegmentCount: number;
+    beatCount: number;
+    cueCount: number;
+    modelUsed?: string | null;
+    error?: string | null;
+  };
+  backgroundMusic: {
+    status: RenderAudioLayerStatus;
+    sourcePath?: string | null;
+    gainDb?: number;
+    duckingDb?: number;
+    error?: string | null;
+  };
+  transitionSfx: {
+    status: RenderAudioLayerStatus;
+    sourcePath?: string | null;
+    eventCount?: number;
+    gainDb?: number;
+    error?: string | null;
+  };
 };
 
 export type RenderOutput = {
@@ -191,5 +280,8 @@ export type RenderOutput = {
   variants: RenderVariant[];
   audioStatus?: "generated" | "missing";
   audioError?: string | null;
+  audioComposition?: RenderAudioComposition;
+  generatedVideoBeatCount?: number;
+  generatedVideoFailureCount?: number;
   storyboard?: StoryboardPlan;
 };

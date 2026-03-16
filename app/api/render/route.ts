@@ -110,7 +110,19 @@ export async function POST(req: Request) {
     });
 
     await log(`Render format chosen: ${output.format}.`);
-    await log(output.audioStatus === "generated" ? "Generated narration/audio track for the render." : `Render completed without narration/audio. ${output.audioError ?? ""}`.trim());
+    if ((output.generatedVideoBeatCount ?? 0) > 0) {
+      await log(`Generated ${output.generatedVideoBeatCount} Veo support clip${output.generatedVideoBeatCount === 1 ? "" : "s"} for uncovered beats.`);
+    }
+    if ((output.generatedVideoFailureCount ?? 0) > 0) {
+      await log(
+        `Veo clip generation fell back to still support for ${output.generatedVideoFailureCount} beat${output.generatedVideoFailureCount === 1 ? "" : "s"}.`,
+      );
+    }
+    await log(
+      output.audioStatus === "generated"
+        ? output.audioComposition?.summary ?? "Generated narration/audio track for the render."
+        : `Render completed without narration/audio. ${output.audioError ?? ""}`.trim(),
+    );
 
     await prisma.$transaction(
       output.variants.map((variant) =>

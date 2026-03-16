@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { llmChatJSON, llmChatJSONWithUserContentDetailed, llmGenerateImage } from "@/lib/llm";
+import { llmChatJSON, llmChatJSONWithUserContentDetailed, llmGenerateImage, llmGenerateVideoDetailed } from "@/lib/llm";
 
 describe("llmChatJSON", () => {
   beforeEach(() => {
@@ -9,6 +9,7 @@ describe("llmChatJSON", () => {
     delete process.env.LLM_MODEL_DEFAULT;
     delete process.env.LLM_MODEL_HARD;
     delete process.env.LLM_IMAGE_MODEL;
+    delete process.env.LLM_VIDEO_MODEL;
     delete process.env.LLM_BASE_URL;
   });
 
@@ -151,7 +152,7 @@ describe("llmChatJSON", () => {
   it("falls back to the native Gemini image endpoint when the OpenAI-compatible image route rejects the model", async () => {
     process.env.LLM_API_KEY = "test-key";
     process.env.LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
-    process.env.LLM_IMAGE_MODEL = "gemini-2.5-flash-image";
+    process.env.LLM_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 
     const fetchMock = vi
       .fn()
@@ -159,7 +160,7 @@ describe("llmChatJSON", () => {
         new Response(
           JSON.stringify({
             error: {
-              message: "models/gemini-2.5-flash-image is not found for API version v1main",
+              message: "models/gemini-3.1-flash-image-preview is not found for API version v1main",
             },
           }),
           { status: 404 },
@@ -199,7 +200,7 @@ describe("llmChatJSON", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://generativelanguage.googleapis.com/v1beta/openai/images/generations");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=test-key",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent?key=test-key",
     );
   });
 
@@ -234,5 +235,106 @@ describe("llmChatJSON", () => {
     expect(result.data).toBeNull();
     expect(result.error).toBeTruthy();
     expect(result.responsePreview).toContain('{"visualSummary":"ok",}');
+  });
+
+  it("generates a Veo clip through the long-running Gemini API", async () => {
+    process.env.LLM_API_KEY = "test-key";
+    process.env.LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+    process.env.LLM_VIDEO_MODEL = "veo-3.1-fast-generate-preview";
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            name: "operations/video-123",
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            done: true,
+            response: {
+              generateVideoResponse: {
+                generatedSamples: [
+                  {
+                    video: {
+                      uri: "https://generativelanguage.googleapis.com/v1beta/files/video-123:download",
+                    },
+                  },
+                ],
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response("fake-video-bytes", {
+          status: 200,
+          headers: {
+            "Content-Type": "video/mp4",
+          },
+        }),
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await llmGenerateVideoDetailed({
+      prompt: "Animate this product UI into a subtle camera move.",
+      aspectRatio: "9:16",
+      durationSeconds: 4,
+      image: {
+        mimeType: "image/png",
+        base64: "ZmFrZS1pbWFnZS1ieXRlcw==",
+      },
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.mimeType).toBe("video/mp4");
+    expect(result.base64).toBe(Buffer.from("fake-video-bytes").toString("base64"));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning",
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
+      instances: [
+        {
+          prompt: "Animate this product UI into a subtle camera move.",
+          image: {
+            inlineData: {
+              mimeType: "image/png",
+              data: "ZmFrZS1pbWFnZS1ieXRlcw==",
+            },
+          },
+        },
+      ],
+      parameters: {
+        aspectRatio: "9:16",
+        durationSeconds: "4",
+        resolution: "720p",
+        personGeneration: "allow_adult",
+      },
+    });
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("https://generativelanguage.googleapis.com/v1beta/operations/video-123");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toBe("https://generativelanguage.googleapis.com/v1beta/files/video-123:download");
+  });
+
+  it("returns an error when Veo generation is requested against a non-Gemini endpoint", async () => {
+    process.env.LLM_API_KEY = "test-key";
+    process.env.LLM_BASE_URL = "https://llm.example.com";
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await llmGenerateVideoDetailed({
+      prompt: "Animate the still.",
+    });
+
+    expect(result.base64).toBeNull();
+    expect(result.error).toContain("native Gemini API endpoint");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

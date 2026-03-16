@@ -3,11 +3,14 @@ import { z } from "zod";
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 const DEFAULT_MODEL = "gemini-2.5-pro";
 const DEFAULT_HARD_MODEL = "gemini-3.1-pro-preview";
-const DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image";
-const DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts";
+const DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
+const DEFAULT_TTS_MODEL = "gemini-2.5-pro-preview-tts";
+const DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview";
 const DEFAULT_TTS_VOICE = "Kore";
 const HARD_PROMPT_CHAR_THRESHOLD = 24_000;
 const HARD_PROMPT_SOURCE_THRESHOLD = 12;
+const VIDEO_POLL_INTERVAL_MS = 10_000;
+const VIDEO_POLL_TIMEOUT_MS = 6 * 60_000 + 30_000;
 
 export type ChatContentPart = {
   type: string;
@@ -33,6 +36,14 @@ export type LlmSpeechResult = {
   mimeType: string | null;
   error: string | null;
   modelUsed?: string;
+};
+
+export type LlmVideoResult = {
+  base64: string | null;
+  mimeType: string | null;
+  error: string | null;
+  modelUsed?: string;
+  operationName?: string;
 };
 
 const ChatMessageSchema = z.object({
@@ -94,6 +105,20 @@ const GeminiGenerateContentResponseSchema = z.object({
     .default([]),
 });
 
+const GeminiLongRunningOperationSchema = z
+  .object({
+    name: z.string().optional(),
+    done: z.boolean().optional(),
+    error: z
+      .object({
+        message: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+    response: z.unknown().optional(),
+  })
+  .passthrough();
+
 export function hasLlmConfig() {
   return Boolean(process.env.LLM_API_KEY);
 }
@@ -110,17 +135,27 @@ function canUseNativeGeminiEndpoint(baseUrl: string) {
   return /generativelanguage\.googleapis\.com/i.test(baseUrl);
 }
 
+function resolveNativeGeminiApiRoot(baseUrl: string) {
+  if (!canUseNativeGeminiEndpoint(baseUrl)) {
+    return null;
+  }
+
+  return baseUrl.replace(/\/openai\/?$/i, "");
+}
+
 function resolveModels() {
   const defaultModel = process.env.LLM_MODEL_DEFAULT ?? process.env.LLM_MODEL ?? DEFAULT_MODEL;
   const hardModel = process.env.LLM_MODEL_HARD ?? DEFAULT_HARD_MODEL;
   const imageModel = process.env.LLM_IMAGE_MODEL ?? DEFAULT_IMAGE_MODEL;
   const ttsModel = process.env.LLM_TTS_MODEL ?? DEFAULT_TTS_MODEL;
+  const videoModel = process.env.LLM_VIDEO_MODEL ?? DEFAULT_VIDEO_MODEL;
   const ttsVoice = process.env.LLM_TTS_VOICE ?? DEFAULT_TTS_VOICE;
   return {
     defaultModel,
     hardModel,
     imageModel,
     ttsModel,
+    videoModel,
     ttsVoice,
   };
 }
@@ -193,6 +228,10 @@ async function readResponseText(response: Response) {
 
 function shortenErrorMessage(message: string) {
   return message.replace(/\s+/g, " ").trim().slice(0, 220);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function extractTextFromContent(content: string | ChatContentPart[] | undefined) {
@@ -332,6 +371,41 @@ function extractApiError(text: string, status: number, model: string) {
   }
 
   return shortenErrorMessage(`Model ${model} returned HTTP ${status}: ${text}`);
+}
+
+function extractVideoOperationUri(response: unknown) {
+  if (!response || typeof response !== "object") {
+    return null;
+  }
+
+  const candidate = response as {
+    generateVideoResponse?: {
+      generatedSamples?: Array<{ video?: { uri?: string } }>;
+    };
+    generatedVideos?: Array<{ video?: { uri?: string } }>;
+  };
+
+  return (
+    candidate.generateVideoResponse?.generatedSamples?.[0]?.video?.uri ??
+    candidate.generatedVideos?.[0]?.video?.uri ??
+    null
+  );
+}
+
+function extractOperationErrorMessage(operation: z.infer<typeof GeminiLongRunningOperationSchema>, model: string) {
+  const directMessage = operation.error?.message;
+  if (directMessage) {
+    return shortenErrorMessage(`Video generation failed for ${model}: ${directMessage}`);
+  }
+
+  if (operation.response && typeof operation.response === "object") {
+    const responseMessage = (operation.response as { error?: { message?: string } }).error?.message;
+    if (responseMessage) {
+      return shortenErrorMessage(`Video generation failed for ${model}: ${responseMessage}`);
+    }
+  }
+
+  return `Video generation failed for ${model}.`;
 }
 
 export async function llmChatJSON<T>(params: {
@@ -639,6 +713,191 @@ export async function llmGenerateSpeechDetailed(params: {
           ? shortenErrorMessage(`Speech generation request failed for ${ttsModel}: ${error.message}`)
           : `Speech generation request failed for ${ttsModel}.`,
       modelUsed: ttsModel,
+    };
+  }
+}
+
+export async function llmGenerateVideoDetailed(params: {
+  prompt: string;
+  aspectRatio?: "16:9" | "9:16";
+  durationSeconds?: 4 | 6 | 8;
+  resolution?: "720p" | "1080p" | "4k";
+  negativePrompt?: string;
+  image?: {
+    mimeType: string;
+    base64: string;
+  };
+}): Promise<LlmVideoResult> {
+  const apiKey = resolveApiKey();
+  if (!apiKey) {
+    return {
+      base64: null,
+      mimeType: null,
+      error: "LLM_API_KEY is missing, so generated video support is unavailable.",
+    };
+  }
+
+  const baseUrl = resolveBaseUrl();
+  const apiRoot = resolveNativeGeminiApiRoot(baseUrl);
+  const { videoModel } = resolveModels();
+
+  if (!apiRoot) {
+    return {
+      base64: null,
+      mimeType: null,
+      error: "Generated video support requires the native Gemini API endpoint.",
+      modelUsed: videoModel,
+    };
+  }
+
+  try {
+    const operationResponse = await fetch(
+      `${apiRoot}/models/${encodeURIComponent(videoModel)}:predictLongRunning`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          instances: [
+            {
+              prompt: params.prompt,
+              ...(params.image
+                ? {
+                    image: {
+                      inlineData: {
+                        mimeType: params.image.mimeType,
+                        data: params.image.base64,
+                      },
+                    },
+                  }
+                : {}),
+            },
+          ],
+          parameters: {
+            aspectRatio: params.aspectRatio ?? "9:16",
+            durationSeconds: String(params.durationSeconds ?? 4),
+            resolution: params.resolution ?? "720p",
+            ...(params.negativePrompt ? { negativePrompt: params.negativePrompt } : {}),
+            ...(params.image ? { personGeneration: "allow_adult" } : {}),
+          },
+        }),
+      },
+    );
+
+    if (!operationResponse.ok) {
+      return {
+        base64: null,
+        mimeType: null,
+        error: extractApiError(await readResponseText(operationResponse), operationResponse.status, videoModel),
+        modelUsed: videoModel,
+      };
+    }
+
+    const operation = GeminiLongRunningOperationSchema.parse(await operationResponse.json());
+    const operationName = operation.name;
+
+    if (!operationName) {
+      return {
+        base64: null,
+        mimeType: null,
+        error: `Video generation did not return an operation name for ${videoModel}.`,
+        modelUsed: videoModel,
+      };
+    }
+
+    const deadline = Date.now() + VIDEO_POLL_TIMEOUT_MS;
+    let currentOperation = operation;
+
+    while (!currentOperation.done) {
+      if (Date.now() >= deadline) {
+        return {
+          base64: null,
+          mimeType: null,
+          error: `Video generation timed out for ${videoModel}.`,
+          modelUsed: videoModel,
+          operationName,
+        };
+      }
+
+      const statusResponse = await fetch(`${apiRoot}/${operationName}`, {
+        headers: {
+          "x-goog-api-key": apiKey,
+        },
+      });
+
+      if (!statusResponse.ok) {
+        return {
+          base64: null,
+          mimeType: null,
+          error: extractApiError(await readResponseText(statusResponse), statusResponse.status, videoModel),
+          modelUsed: videoModel,
+          operationName,
+        };
+      }
+
+      currentOperation = GeminiLongRunningOperationSchema.parse(await statusResponse.json());
+
+      if (!currentOperation.done) {
+        await sleep(VIDEO_POLL_INTERVAL_MS);
+      }
+    }
+
+    if (currentOperation.error) {
+      return {
+        base64: null,
+        mimeType: null,
+        error: extractOperationErrorMessage(currentOperation, videoModel),
+        modelUsed: videoModel,
+        operationName,
+      };
+    }
+
+    const videoUri = extractVideoOperationUri(currentOperation.response);
+    if (!videoUri) {
+      return {
+        base64: null,
+        mimeType: null,
+        error: `Video generation completed for ${videoModel}, but no downloadable video URI was returned.`,
+        modelUsed: videoModel,
+        operationName,
+      };
+    }
+
+    const videoResponse = await fetch(videoUri, {
+      headers: {
+        "x-goog-api-key": apiKey,
+      },
+    });
+
+    if (!videoResponse.ok) {
+      return {
+        base64: null,
+        mimeType: null,
+        error: `Generated video download failed with HTTP ${videoResponse.status}.`,
+        modelUsed: videoModel,
+        operationName,
+      };
+    }
+
+    const videoBytes = Buffer.from(await videoResponse.arrayBuffer());
+    return {
+      base64: videoBytes.toString("base64"),
+      mimeType: videoResponse.headers.get("content-type") ?? "video/mp4",
+      error: null,
+      modelUsed: videoModel,
+      operationName,
+    };
+  } catch (error) {
+    return {
+      base64: null,
+      mimeType: null,
+      error:
+        error instanceof Error
+          ? shortenErrorMessage(`Video generation request failed for ${videoModel}: ${error.message}`)
+          : `Video generation request failed for ${videoModel}.`,
+      modelUsed: videoModel,
     };
   }
 }

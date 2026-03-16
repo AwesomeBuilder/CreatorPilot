@@ -2,8 +2,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { existsSync } from "node:fs";
 
-import { createGeneratedSupportingImage } from "@/lib/generated-media";
+import {
+  createGeneratedSupportingAssetDetailed,
+} from "@/lib/generated-media";
 import { ensureDir, ensureFfmpegInstalled, FFMPEG_BIN, isImagePath, probeMedia, runBinary } from "@/lib/ffmpeg";
+import { applyStoryboardEditorialTiming, compactOverlayCopy, sanitizeOverlayText, wrapOverlayText } from "@/lib/editorial";
 import { buildNarrationTrack } from "@/lib/narration";
 import type {
   NormalizedCropWindow,
@@ -16,25 +19,53 @@ import type {
 } from "@/lib/types";
 
 const FADE_DURATION = 0.18;
+const SUBTITLE_FADE_DURATION = 0.1;
+const DEFAULT_FRAME_RATE = 30;
+const DISPLAY_FONT_CANDIDATES = [
+  "/System/Library/Fonts/Avenir.ttc",
+  "/System/Library/Fonts/Avenir Next.ttc",
+  "/System/Library/Fonts/Supplemental/Futura.ttc",
+  "/System/Library/Fonts/Supplemental/GillSans.ttc",
+  "/System/Library/Fonts/HelveticaNeue.ttc",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+];
+const BODY_FONT_CANDIDATES = [
+  "/System/Library/Fonts/HelveticaNeue.ttc",
+  "/System/Library/Fonts/SFNS.ttf",
+  "/System/Library/Fonts/Helvetica.ttc",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+];
 
 const VARIANT_STYLES = [
   {
     accentColor: "0xF97316",
     titleChip: "0x111827",
     syntheticBackground: "0x0F172A",
-    panSpeed: 0.5,
+    panelStroke: "0xFED7AA",
+    transition: "smoothleft",
+    panSpeed: 0.42,
+    driftX: 0.1,
+    driftY: 0.07,
   },
   {
     accentColor: "0x10B981",
     titleChip: "0x052E2B",
     syntheticBackground: "0x062C2C",
-    panSpeed: 0.62,
+    panelStroke: "0xA7F3D0",
+    transition: "fadeblack",
+    panSpeed: 0.54,
+    driftX: 0.08,
+    driftY: 0.06,
   },
   {
     accentColor: "0x2563EB",
     titleChip: "0x172554",
     syntheticBackground: "0x0F1C3C",
-    panSpeed: 0.56,
+    panelStroke: "0xBFDBFE",
+    transition: "smoothup",
+    panSpeed: 0.48,
+    driftX: 0.09,
+    driftY: 0.05,
   },
 ];
 
@@ -48,17 +79,30 @@ type LayoutPreset = {
   titleFontSize: number;
   titleLineLength: number;
   titleDuration: number;
-  captionX: number;
-  captionY: number;
-  captionBoxW: number;
-  captionBoxH: number;
-  captionFontSize: number;
-  captionLineLength: number;
-  captionMaxLines: number;
   labelFontSize: number;
-  labelYOffset: number;
-  captionTextYOffset: number;
+  titleLabelYOffset: number;
+  titleTextYOffset: number;
+  subtitleX: number;
+  subtitleY: number;
+  subtitleBoxW: number;
+  subtitleBoxH: number;
+  subtitleFontSize: number;
+  subtitleLineLength: number;
+  subtitleMaxLines: number;
+  subtitleLineSpacing: number;
+  imageInset: number;
 };
+
+function resolveFontFile(candidates: string[]) {
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+const DISPLAY_FONT_FILE = resolveFontFile(DISPLAY_FONT_CANDIDATES);
+const BODY_FONT_FILE = resolveFontFile(BODY_FONT_CANDIDATES);
+
+function drawtextFontOption(fontPath: string | null) {
+  return fontPath ? `:fontfile='${escapeFilterValue(fontPath)}'` : "";
+}
 
 function escapeFilterValue(value: string) {
   return value
@@ -68,67 +112,6 @@ function escapeFilterValue(value: string) {
     .replace(/,/g, "\\,")
     .replace(/\[/g, "\\[")
     .replace(/\]/g, "\\]");
-}
-
-function sanitizeOverlayText(text: string, maxLength: number) {
-  return text.replace(/\s+/g, " ").trim().slice(0, maxLength);
-}
-
-function wrapOverlayText(text: string, maxLineLength: number, maxLines: number) {
-  const words = sanitizeOverlayText(text, maxLineLength * maxLines * 2)
-    .split(" ")
-    .filter(Boolean);
-
-  const lines: string[] = [];
-  let currentLine = "";
-
-  for (const word of words) {
-    const nextLine = currentLine ? `${currentLine} ${word}` : word;
-    if (nextLine.length <= maxLineLength) {
-      currentLine = nextLine;
-      continue;
-    }
-
-    if (currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
-    } else {
-      lines.push(word.slice(0, maxLineLength));
-      currentLine = word.slice(maxLineLength);
-    }
-
-    if (lines.length === maxLines) {
-      break;
-    }
-  }
-
-  if (lines.length < maxLines && currentLine) {
-    lines.push(currentLine);
-  }
-
-  if (lines.length === 0) {
-    return "";
-  }
-
-  const hasOverflow = words.join(" ").length > lines.join(" ").length;
-  if (hasOverflow) {
-    const lastLine = lines[lines.length - 1] ?? "";
-    lines[lines.length - 1] = lastLine.length >= maxLineLength ? `${lastLine.slice(0, maxLineLength - 1)}…` : `${lastLine}…`;
-  }
-
-  return lines.join("\n");
-}
-
-function compactOverlayCopy(text: string, maxLength: number) {
-  const normalized = sanitizeOverlayText(text, maxLength * 2);
-  const firstClause = normalized.split(/[.:;!?]/)[0]?.trim() ?? normalized;
-  if (firstClause.length <= maxLength) {
-    return firstClause;
-  }
-
-  const shortened = firstClause.slice(0, maxLength);
-  const lastSpace = shortened.lastIndexOf(" ");
-  return `${(lastSpace > 18 ? shortened.slice(0, lastSpace) : shortened).trim()}…`;
 }
 
 type BeatVisualSource = {
@@ -251,46 +234,50 @@ function layoutForFormat(format: RenderFormat): LayoutPreset {
     return {
       width: 1080,
       height: 1920,
-      titleX: 72,
-      titleY: 82,
-      titleBoxW: 936,
-      titleBoxH: 128,
-      titleFontSize: 42,
-      titleLineLength: 28,
-      titleDuration: 1.2,
-      captionX: 72,
-      captionY: 1288,
-      captionBoxW: 936,
-      captionBoxH: 230,
-      captionFontSize: 46,
-      captionLineLength: 22,
-      captionMaxLines: 3,
-      labelFontSize: 28,
-      labelYOffset: 28,
-      captionTextYOffset: 78,
+      titleX: 68,
+      titleY: 80,
+      titleBoxW: 760,
+      titleBoxH: 116,
+      titleFontSize: 36,
+      titleLineLength: 26,
+      titleDuration: 1.05,
+      labelFontSize: 22,
+      titleLabelYOffset: 18,
+      titleTextYOffset: 46,
+      subtitleX: 74,
+      subtitleY: 1478,
+      subtitleBoxW: 932,
+      subtitleBoxH: 214,
+      subtitleFontSize: 40,
+      subtitleLineLength: 24,
+      subtitleMaxLines: 3,
+      subtitleLineSpacing: 12,
+      imageInset: 108,
     };
   }
 
   return {
     width: 1920,
     height: 1080,
-    titleX: 108,
-    titleY: 72,
-    titleBoxW: 1704,
-    titleBoxH: 116,
-    titleFontSize: 46,
+    titleX: 96,
+    titleY: 64,
+    titleBoxW: 980,
+    titleBoxH: 102,
+    titleFontSize: 40,
     titleLineLength: 34,
-    titleDuration: 1.25,
-    captionX: 108,
-    captionY: 636,
-    captionBoxW: 1704,
-    captionBoxH: 170,
-    captionFontSize: 44,
-    captionLineLength: 34,
-    captionMaxLines: 2,
-    labelFontSize: 26,
-    labelYOffset: 24,
-    captionTextYOffset: 60,
+    titleDuration: 1.12,
+    labelFontSize: 20,
+    titleLabelYOffset: 16,
+    titleTextYOffset: 42,
+    subtitleX: 188,
+    subtitleY: 796,
+    subtitleBoxW: 1544,
+    subtitleBoxH: 144,
+    subtitleFontSize: 36,
+    subtitleLineLength: 42,
+    subtitleMaxLines: 2,
+    subtitleLineSpacing: 10,
+    imageInset: 148,
   };
 }
 
@@ -358,38 +345,52 @@ function cropFilterPrefix(cropWindow?: NormalizedCropWindow) {
   return `crop=iw*${cropWindow.width}:ih*${cropWindow.height}:iw*${cropWindow.left}:ih*${cropWindow.top}`;
 }
 
-function animatedImageFilter(layout: LayoutPreset, duration: number, panSpeed: number, cropWindow?: NormalizedCropWindow) {
-  const scaledWidth = Math.round(layout.width * 1.12);
-  const scaledHeight = Math.round(layout.height * 1.12);
-  return [
-    cropFilterPrefix(cropWindow),
-    `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase`,
-    `crop=${layout.width}:${layout.height}:x='(in_w-out_w)/2+((in_w-out_w)*0.10)*sin(t*${panSpeed})':y='(in_h-out_h)/2+((in_h-out_h)*0.08)*cos(t*${panSpeed})'`,
-    "setsar=1",
-    "fps=30",
-    `trim=duration=${duration}`,
-    "setpts=PTS-STARTPTS",
-  ]
-    .filter(Boolean)
-    .join(",");
-}
-
-function videoFilter(layout: LayoutPreset, duration: number, extensionDuration: number) {
-  const filters = [
-    `scale=${layout.width}:${layout.height}:force_original_aspect_ratio=increase`,
-    `crop=${layout.width}:${layout.height}`,
-    "setsar=1",
-    "fps=30",
-    "eq=saturation=1.03:brightness=-0.01:contrast=1.04",
-    "setpts=PTS-STARTPTS",
-  ];
-
-  if (extensionDuration > 0) {
-    filters.push(`tpad=stop_mode=clone:stop_duration=${extensionDuration}`);
+function sequenceTransitionOverlap(totalSeconds: number, segmentCount: number) {
+  if (segmentCount <= 1) {
+    return 0;
   }
 
-  filters.push(`trim=duration=${duration}`);
-  return filters.join(",");
+  return Number(Math.min(0.24, totalSeconds / (segmentCount * 5.5)).toFixed(2));
+}
+
+function driftExpression(axis: "x" | "y", style: (typeof VARIANT_STYLES)[number], phase: number) {
+  if (axis === "x") {
+    return `((in_w-out_w)*${style.driftX.toFixed(3)})*sin(t*${style.panSpeed}+${phase.toFixed(2)})`;
+  }
+
+  return `((in_h-out_h)*${style.driftY.toFixed(3)})*cos(t*${Math.max(0.28, style.panSpeed * 0.82).toFixed(3)}+${phase.toFixed(2)})`;
+}
+
+function editorialSurfaceFilters(layout: LayoutPreset, style: (typeof VARIANT_STYLES)[number]) {
+  return [
+    `drawbox=x=0:y=0:w=${layout.width}:h=${Math.round(layout.height * 0.2)}:color=black@0.08:t=fill`,
+    `drawbox=x=0:y=${Math.round(layout.height * 0.72)}:w=${layout.width}:h=${Math.round(layout.height * 0.28)}:color=black@0.18:t=fill`,
+    `drawbox=x=0:y=0:w=${layout.width}:h=3:color=${style.accentColor}@0.86:t=fill`,
+  ].join(",");
+}
+
+function subtitleBoxY(layout: LayoutPreset, lineCount: number) {
+  const textBlockHeight = lineCount * layout.subtitleFontSize + Math.max(0, lineCount - 1) * layout.subtitleLineSpacing;
+  return Math.round(layout.subtitleY + (layout.subtitleBoxH - textBlockHeight) / 2);
+}
+
+function buildBeatIntroFilter(params: {
+  layout: LayoutPreset;
+  beat: StoryboardBeat;
+  style: (typeof VARIANT_STYLES)[number];
+  titleFilePath: string;
+  labelFilePath: string;
+}) {
+  const titleDuration = params.beat.titleOverlay?.endOffsetSeconds ?? params.layout.titleDuration;
+  return [
+    editorialSurfaceFilters(params.layout, params.style),
+    `drawbox=x=${params.layout.titleX}:y=${params.layout.titleY}:w=${params.layout.titleBoxW}:h=${params.layout.titleBoxH}:color=${params.style.titleChip}@0.78:t=fill:enable='between(t,0,${titleDuration})'`,
+    `drawbox=x=${params.layout.titleX + 20}:y=${params.layout.titleY + 16}:w=6:h=${params.layout.titleBoxH - 32}:color=${params.style.accentColor}@1:t=fill:enable='between(t,0,${titleDuration})'`,
+    `drawtext=textfile='${escapeFilterValue(params.labelFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE)}:fontcolor=${params.style.panelStroke}:fontsize=${params.layout.labelFontSize}:x=${params.layout.titleX + 40}:y=${params.layout.titleY + params.layout.titleLabelYOffset}:fix_bounds=1:enable='between(t,0,${titleDuration})'`,
+    `drawtext=textfile='${escapeFilterValue(params.titleFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE)}:fontcolor=white:fontsize=${params.layout.titleFontSize}:x=${params.layout.titleX + 40}:y=${params.layout.titleY + params.layout.titleTextYOffset}:line_spacing=8:fix_bounds=1:enable='between(t,0,${titleDuration})'`,
+    `fade=t=in:st=0:d=${FADE_DURATION}`,
+    `fade=t=out:st=${Math.max(0.1, params.beat.durationSeconds - FADE_DURATION)}:d=${FADE_DURATION}`,
+  ].join(",");
 }
 
 async function createSyntheticClip(params: {
@@ -398,24 +399,29 @@ async function createSyntheticClip(params: {
   beat: StoryboardBeat;
   style: (typeof VARIANT_STYLES)[number];
 }) {
-  const titleText = wrapOverlayText(params.beat.title, params.layout.titleLineLength, 2);
-  const captionText = wrapOverlayText(
-    compactOverlayCopy(params.beat.caption || params.beat.title, params.layout.captionLineLength * 2),
-    params.layout.captionLineLength,
-    Math.min(2, params.layout.captionMaxLines),
+  const titleText = wrapOverlayText(params.beat.titleOverlay?.text ?? params.beat.title, params.layout.titleLineLength, 2);
+  const statementText = wrapOverlayText(
+    compactOverlayCopy(params.beat.caption || params.beat.narration || params.beat.title, params.layout.subtitleLineLength * 2),
+    params.layout.subtitleLineLength,
+    Math.min(2, params.layout.subtitleMaxLines),
   );
   const labelText = beatLabel(params.beat);
 
   await withOverlayTextFile({ basePath: params.outputPath, suffix: "title", text: titleText }, async (titleFilePath) =>
-    withOverlayTextFile({ basePath: params.outputPath, suffix: "caption", text: captionText }, async (captionFilePath) =>
+    withOverlayTextFile({ basePath: params.outputPath, suffix: "statement", text: statementText }, async (statementFilePath) =>
       withOverlayTextFile({ basePath: params.outputPath, suffix: "label", text: labelText }, async (labelFilePath) => {
         const filter = [
-          `drawbox=x=${params.layout.titleX}:y=${params.layout.titleY}:w=${params.layout.titleBoxW}:h=${params.layout.titleBoxH}:color=${params.style.titleChip}@0.88:t=fill:enable='between(t,0,${params.layout.titleDuration})'`,
-          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=${params.layout.captionBoxH}:color=black@0.56:t=fill`,
-          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=4:color=${params.style.accentColor}@1:t=fill`,
-          `drawtext=textfile='${escapeFilterValue(titleFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.titleFontSize}:x=${params.layout.titleX + 36}:y=${params.layout.titleY + 28}:line_spacing=10:fix_bounds=1:enable='between(t,0,${params.layout.titleDuration})'`,
-          `drawtext=textfile='${escapeFilterValue(labelFilePath)}':expansion=none:fontcolor=${params.style.accentColor}:fontsize=${params.layout.labelFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.labelYOffset}:fix_bounds=1`,
-          `drawtext=textfile='${escapeFilterValue(captionFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.captionFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.captionTextYOffset}:line_spacing=14:fix_bounds=1`,
+          `drawbox=x=0:y=0:w=${params.layout.width}:h=${params.layout.height}:color=${params.style.syntheticBackground}@1:t=fill`,
+          `drawbox=x=${Math.round(params.layout.width * 0.08)}:y=${Math.round(params.layout.height * 0.18)}:w=${Math.round(params.layout.width * 0.84)}:h=${Math.round(params.layout.height * 0.5)}:color=black@0.18:t=fill`,
+          `drawbox=x=${Math.round(params.layout.width * 0.08)}:y=${Math.round(params.layout.height * 0.18)}:w=8:h=${Math.round(params.layout.height * 0.5)}:color=${params.style.accentColor}@1:t=fill`,
+          buildBeatIntroFilter({
+            layout: params.layout,
+            beat: params.beat,
+            style: params.style,
+            titleFilePath,
+            labelFilePath,
+          }),
+          `drawtext=textfile='${escapeFilterValue(statementFilePath)}':expansion=none${drawtextFontOption(DISPLAY_FONT_FILE)}:fontcolor=white:fontsize=${Math.round(params.layout.subtitleFontSize * 1.02)}:x=${Math.round(params.layout.width * 0.14)}:y=${Math.round(params.layout.height * 0.44)}:line_spacing=${params.layout.subtitleLineSpacing}:fix_bounds=1`,
           `fade=t=in:st=0:d=${FADE_DURATION}`,
           `fade=t=out:st=${Math.max(0.1, params.beat.durationSeconds - FADE_DURATION)}:d=${FADE_DURATION}`,
         ].join(",");
@@ -429,7 +435,7 @@ async function createSyntheticClip(params: {
           "-vf",
           filter,
           "-r",
-          "30",
+          String(DEFAULT_FRAME_RATE),
           "-c:v",
           "libx264",
           "-preset",
@@ -443,12 +449,111 @@ async function createSyntheticClip(params: {
   );
 }
 
+async function createImageSegmentClip(params: {
+  outputPath: string;
+  layout: LayoutPreset;
+  durationSeconds: number;
+  visual: BeatVisualSource;
+  style: (typeof VARIANT_STYLES)[number];
+  phase: number;
+}) {
+  const cropPrefix = cropFilterPrefix(params.visual.cropWindow);
+  const backgroundScaleW = Math.round(params.layout.width * 1.08);
+  const backgroundScaleH = Math.round(params.layout.height * 1.08);
+  const foregroundMaxW = params.layout.width - params.layout.imageInset * 2;
+  const foregroundMaxH = params.layout.height - params.layout.imageInset * 2;
+
+  const sourcePrefix = cropPrefix ? `${cropPrefix},` : "";
+  const complexFilter = [
+    `[0:v]${sourcePrefix}split=3[bgsrc][fgsrc][shadowSrc]`,
+    `[bgsrc]scale=${backgroundScaleW}:${backgroundScaleH}:force_original_aspect_ratio=increase,crop=${params.layout.width}:${params.layout.height}:x='(in_w-out_w)/2+${driftExpression("x", params.style, params.phase)}':y='(in_h-out_h)/2+${driftExpression("y", params.style, params.phase + 0.6)}',boxblur=28:4,eq=saturation=0.86:brightness=-0.08:contrast=1.08,setsar=1,fps=${DEFAULT_FRAME_RATE},trim=duration=${params.durationSeconds},setpts=PTS-STARTPTS[bg]`,
+    `[fgsrc]scale=${foregroundMaxW}:${foregroundMaxH}:force_original_aspect_ratio=decrease,eq=saturation=1.04:brightness=0.01:contrast=1.06,unsharp=5:5:0.55:3:3:0.0,setsar=1,fps=${DEFAULT_FRAME_RATE},trim=duration=${params.durationSeconds},setpts=PTS-STARTPTS[fg]`,
+    `[shadowSrc]scale=${foregroundMaxW}:${foregroundMaxH}:force_original_aspect_ratio=decrease,format=rgba,colorchannelmixer=rr=0:gg=0:bb=0:aa=0.28,boxblur=24:2,setsar=1,fps=${DEFAULT_FRAME_RATE},trim=duration=${params.durationSeconds},setpts=PTS-STARTPTS[shadow]`,
+    `[bg][shadow]overlay=x='(W-w)/2+${Math.round(params.layout.width * 0.018)}':y='(H-h)/2+${Math.round(params.layout.height * 0.02)}'[shadowed]`,
+    `[shadowed][fg]overlay=x='(W-w)/2':y='(H-h)/2',${editorialSurfaceFilters(params.layout, params.style)},format=yuv420p[vout]`,
+  ].join(";");
+
+  await runBinary(FFMPEG_BIN, [
+    "-loop",
+    "1",
+    "-i",
+    params.visual.assetPath,
+    "-t",
+    String(params.durationSeconds),
+    "-filter_complex",
+    complexFilter,
+    "-map",
+    "[vout]",
+    "-an",
+    "-r",
+    String(DEFAULT_FRAME_RATE),
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-pix_fmt",
+    "yuv420p",
+    "-y",
+    params.outputPath,
+  ]);
+}
+
+async function createVideoSegmentClip(params: {
+  outputPath: string;
+  layout: LayoutPreset;
+  durationSeconds: number;
+  inputDuration: number;
+  visual: BeatVisualSource;
+  style: (typeof VARIANT_STYLES)[number];
+  phase: number;
+}) {
+  const cropPrefix = cropFilterPrefix(params.visual.cropWindow);
+  const filters = [
+    cropPrefix,
+    `scale=${Math.round(params.layout.width * 1.08)}:${Math.round(params.layout.height * 1.08)}:force_original_aspect_ratio=increase`,
+    `crop=${params.layout.width}:${params.layout.height}:x='(in_w-out_w)/2+${driftExpression("x", params.style, params.phase)}':y='(in_h-out_h)/2+${driftExpression("y", params.style, params.phase + 0.8)}'`,
+    "setsar=1",
+    `fps=${DEFAULT_FRAME_RATE}`,
+    "eq=saturation=1.05:brightness=-0.02:contrast=1.06",
+    "unsharp=5:5:0.45:3:3:0.0",
+    params.durationSeconds > params.inputDuration ? `tpad=stop_mode=clone:stop_duration=${Math.max(0, params.durationSeconds - params.inputDuration)}` : null,
+    `trim=duration=${params.durationSeconds}`,
+    editorialSurfaceFilters(params.layout, params.style),
+  ]
+    .filter(Boolean)
+    .join(",");
+
+  const start = params.visual.shotStartSeconds ?? 0;
+  await runBinary(FFMPEG_BIN, [
+    "-y",
+    "-ss",
+    String(start),
+    "-t",
+    String(params.inputDuration),
+    "-i",
+    params.visual.assetPath,
+    "-vf",
+    filters,
+    "-an",
+    "-r",
+    String(DEFAULT_FRAME_RATE),
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-pix_fmt",
+    "yuv420p",
+    params.outputPath,
+  ]);
+}
+
 async function createVisualSegmentClip(params: {
   outputPath: string;
   layout: LayoutPreset;
   durationSeconds: number;
   visual: BeatVisualSource;
   style: (typeof VARIANT_STYLES)[number];
+  phase: number;
 }) {
   const isStill = isImagePath(params.visual.assetPath);
   const probe = await probeMedia(params.visual.assetPath);
@@ -461,17 +566,52 @@ async function createVisualSegmentClip(params: {
           : probe.duration ?? params.durationSeconds,
       );
 
-  const visualFilter = isStill
-    ? animatedImageFilter(params.layout, params.durationSeconds, params.style.panSpeed, params.visual.cropWindow)
-    : videoFilter(params.layout, params.durationSeconds, Math.max(0, params.durationSeconds - inputDuration));
+  if (isStill) {
+    await createImageSegmentClip(params);
+    return;
+  }
 
-  const commonOutput = [
+  await createVideoSegmentClip({
+    ...params,
+    inputDuration,
+  });
+}
+
+async function composeBeatSegments(params: {
+  inputPaths: string[];
+  visibleDurations: number[];
+  transition: string;
+  overlapSeconds: number;
+  outputPath: string;
+}) {
+  if (params.inputPaths.length === 1) {
+    await fs.copyFile(params.inputPaths[0]!, params.outputPath);
+    return;
+  }
+
+  const filterParts: string[] = [];
+  let currentLabel = "[0:v]";
+  let offset = params.visibleDurations[0] ?? 0;
+
+  for (let index = 1; index < params.inputPaths.length; index += 1) {
+    const outputLabel = index === params.inputPaths.length - 1 ? "[vout]" : `[xf${index}]`;
+    filterParts.push(
+      `${currentLabel}[${index}:v]xfade=transition=${params.transition}:duration=${params.overlapSeconds}:offset=${offset.toFixed(2)}${outputLabel}`,
+    );
+    currentLabel = outputLabel;
+    offset += params.visibleDurations[index] ?? 0;
+  }
+
+  await runBinary(FFMPEG_BIN, [
     "-y",
-    "-vf",
-    visualFilter,
+    ...params.inputPaths.flatMap((inputPath) => ["-i", inputPath]),
+    "-filter_complex",
+    filterParts.join(";"),
+    "-map",
+    currentLabel,
     "-an",
     "-r",
-    "30",
+    String(DEFAULT_FRAME_RATE),
     "-c:v",
     "libx264",
     "-preset",
@@ -479,65 +619,47 @@ async function createVisualSegmentClip(params: {
     "-pix_fmt",
     "yuv420p",
     params.outputPath,
-  ];
-
-  if (isStill) {
-    await runBinary(FFMPEG_BIN, ["-loop", "1", "-i", params.visual.assetPath, "-t", String(params.durationSeconds), ...commonOutput]);
-    return;
-  }
-
-  const start = params.visual.shotStartSeconds ?? 0;
-  await runBinary(FFMPEG_BIN, ["-ss", String(start), "-t", String(inputDuration), "-i", params.visual.assetPath, ...commonOutput]);
+  ]);
 }
 
-async function applyBeatOverlay(params: {
+async function applyBeatIntroOverlay(params: {
   inputPath: string;
   outputPath: string;
   layout: LayoutPreset;
   beat: StoryboardBeat;
   style: (typeof VARIANT_STYLES)[number];
 }) {
-  const titleText = wrapOverlayText(params.beat.title, params.layout.titleLineLength, 2);
-  const captionText = wrapOverlayText(
-    compactOverlayCopy(params.beat.caption || params.beat.title, params.layout.captionLineLength * 2),
-    params.layout.captionLineLength,
-    Math.min(2, params.layout.captionMaxLines),
-  );
-  const labelText = beatLabel(params.beat);
+  const titleText = wrapOverlayText(params.beat.titleOverlay?.text ?? params.beat.title, params.layout.titleLineLength, 2);
+  const labelText = params.beat.titleOverlay?.label ?? beatLabel(params.beat);
 
   await withOverlayTextFile({ basePath: params.outputPath, suffix: "title", text: titleText }, async (titleFilePath) =>
-    withOverlayTextFile({ basePath: params.outputPath, suffix: "caption", text: captionText }, async (captionFilePath) =>
-      withOverlayTextFile({ basePath: params.outputPath, suffix: "label", text: labelText }, async (labelFilePath) => {
-        const filter = [
-          `drawbox=x=${params.layout.titleX}:y=${params.layout.titleY}:w=${params.layout.titleBoxW}:h=${params.layout.titleBoxH}:color=${params.style.titleChip}@0.84:t=fill:enable='between(t,0,${params.layout.titleDuration})'`,
-          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=${params.layout.captionBoxH}:color=black@0.56:t=fill`,
-          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=4:color=${params.style.accentColor}@1:t=fill`,
-          `drawtext=textfile='${escapeFilterValue(titleFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.titleFontSize}:x=${params.layout.titleX + 36}:y=${params.layout.titleY + 24}:line_spacing=10:fix_bounds=1:enable='between(t,0,${params.layout.titleDuration})'`,
-          `drawtext=textfile='${escapeFilterValue(labelFilePath)}':expansion=none:fontcolor=${params.style.accentColor}:fontsize=${params.layout.labelFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.labelYOffset}:fix_bounds=1`,
-          `drawtext=textfile='${escapeFilterValue(captionFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.captionFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.captionTextYOffset}:line_spacing=12:fix_bounds=1`,
-          `fade=t=in:st=0:d=${FADE_DURATION}`,
-          `fade=t=out:st=${Math.max(0.1, params.beat.durationSeconds - FADE_DURATION)}:d=${FADE_DURATION}`,
-        ].join(",");
+    withOverlayTextFile({ basePath: params.outputPath, suffix: "label", text: labelText }, async (labelFilePath) => {
+      const filter = buildBeatIntroFilter({
+        layout: params.layout,
+        beat: params.beat,
+        style: params.style,
+        titleFilePath,
+        labelFilePath,
+      });
 
-        await runBinary(FFMPEG_BIN, [
-          "-y",
-          "-i",
-          params.inputPath,
-          "-vf",
-          filter,
-          "-an",
-          "-r",
-          "30",
-          "-c:v",
-          "libx264",
-          "-preset",
-          "veryfast",
-          "-pix_fmt",
-          "yuv420p",
-          params.outputPath,
-        ]);
-      }),
-    ),
+      await runBinary(FFMPEG_BIN, [
+        "-y",
+        "-i",
+        params.inputPath,
+        "-vf",
+        filter,
+        "-an",
+        "-r",
+        String(DEFAULT_FRAME_RATE),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-pix_fmt",
+        "yuv420p",
+        params.outputPath,
+      ]);
+    }),
   );
 }
 
@@ -552,7 +674,8 @@ async function createBeatClip(params: {
     await createSyntheticClip(params);
     return;
   }
-  const segmentDurations = splitBeatDuration(params.beat.durationSeconds, visuals.length);
+  const visibleDurations = splitBeatDuration(params.beat.durationSeconds, visuals.length);
+  const overlapSeconds = sequenceTransitionOverlap(params.beat.durationSeconds, visuals.length);
   const segmentDir = `${params.outputPath}.segments`;
   await ensureDir(segmentDir);
 
@@ -562,16 +685,23 @@ async function createBeatClip(params: {
     await createVisualSegmentClip({
       outputPath: segmentPath,
       layout: params.layout,
-      durationSeconds: segmentDurations[index] ?? params.beat.durationSeconds,
+      durationSeconds: (visibleDurations[index] ?? params.beat.durationSeconds) + (index < visuals.length - 1 ? overlapSeconds : 0),
       visual: visuals[index]!,
       style: params.style,
+      phase: index * 0.75 + params.beat.order * 0.2,
     });
     visualSegmentPaths.push(segmentPath);
   }
 
   const visualOnlyPath = `${params.outputPath}.visual.mp4`;
-  await concatClips(visualSegmentPaths, visualOnlyPath);
-  await applyBeatOverlay({
+  await composeBeatSegments({
+    inputPaths: visualSegmentPaths,
+    visibleDurations,
+    transition: params.style.transition,
+    overlapSeconds,
+    outputPath: visualOnlyPath,
+  });
+  await applyBeatIntroOverlay({
     inputPath: visualOnlyPath,
     outputPath: params.outputPath,
     layout: params.layout,
@@ -582,12 +712,124 @@ async function createBeatClip(params: {
   await fs.unlink(visualOnlyPath).catch(() => undefined);
 }
 
+async function resolveGeneratedBeatMedia(params: {
+  userId: string;
+  jobId: string;
+  storyboard: StoryboardPlan;
+  beat: StoryboardBeat;
+}): Promise<{
+  beat: StoryboardBeat;
+  generatedVideoBeatCount: number;
+  generatedVideoFailureCount: number;
+}> {
+  const requestedKind = params.beat.generatedAssetPlan?.requestedKind ?? "still";
+  const basePlan: NonNullable<StoryboardBeat["generatedAssetPlan"]> = params.beat.generatedAssetPlan ?? {
+    requestedKind,
+    status: params.beat.generatedVisualStatus ?? ("planned" as const),
+    provider: requestedKind === "motion" ? ("gemini-video" as const) : ("gemini-image" as const),
+    prompt: params.beat.generatedVisualPrompt ?? params.beat.title,
+  };
+  const existingSelectedPath =
+    params.beat.selectedAssetPath && existsSync(params.beat.selectedAssetPath) ? params.beat.selectedAssetPath : null;
+
+  if (existingSelectedPath && !isImagePath(existingSelectedPath)) {
+    return {
+      beat: {
+        ...params.beat,
+        selectedAssetPath: existingSelectedPath,
+        generatedVisualStatus: params.beat.generatedVisualStatus === "planned" ? "generated" : params.beat.generatedVisualStatus,
+        generatedAssetPlan: {
+          ...basePlan,
+          resolvedKind: "motion",
+          status: "generated",
+          assetPath: existingSelectedPath,
+          previewPath: params.beat.generatedPreviewPath ?? basePlan.previewPath ?? null,
+          error: null,
+        },
+      },
+      generatedVideoBeatCount: 1,
+      generatedVideoFailureCount: 0,
+    };
+  }
+
+  const existingReferenceImage = [params.beat.generatedPreviewPath, existingSelectedPath].find(
+    (candidate): candidate is string => Boolean(candidate && isImagePath(candidate) && existsSync(candidate)),
+  );
+  const generatedResult = await createGeneratedSupportingAssetDetailed({
+    userId: params.userId,
+    scopeId: params.jobId,
+    beatId: params.beat.beatId,
+    prompt: params.beat.generatedVisualPrompt ?? params.beat.title,
+    format: params.storyboard.format,
+    preferredKind: requestedKind,
+    initialImagePath: existingReferenceImage,
+    scope: "render",
+    allowStillFallback: true,
+  });
+
+  if (generatedResult.path) {
+    const resolvedKind = generatedResult.resolvedKind ?? (isImagePath(generatedResult.path) ? ("still" as const) : ("motion" as const));
+    const previewPath =
+      generatedResult.previewPath ??
+      params.beat.generatedPreviewPath ??
+      (isImagePath(generatedResult.path) ? generatedResult.path : null);
+    const fellBackFromMotion = generatedResult.degradedFrom === "motion";
+    return {
+      beat: {
+        ...params.beat,
+        selectedAssetPath: generatedResult.path,
+        generatedPreviewPath: previewPath,
+        assetType: "generated" as const,
+        generatedVisualStatus: "generated" as const,
+        matchReason: fellBackFromMotion
+          ? `${params.beat.matchReason} Motion generation was unavailable, so the render fell back to a generated still.`
+          : params.beat.matchReason,
+        analysisNote: generatedResult.error ?? params.beat.analysisNote,
+        generatedAssetPlan: {
+          ...basePlan,
+          resolvedKind,
+          status: "generated",
+          provider: generatedResult.provider,
+          assetPath: generatedResult.path,
+          previewPath,
+          fallbackAssetPath: generatedResult.fallbackAssetPath ?? null,
+          degradedFrom: generatedResult.degradedFrom,
+          error: generatedResult.error,
+        },
+      },
+      generatedVideoBeatCount: resolvedKind === "motion" ? 1 : 0,
+      generatedVideoFailureCount: requestedKind === "motion" && resolvedKind !== "motion" ? 1 : 0,
+    };
+  }
+
+  return {
+    beat: {
+      ...params.beat,
+      mediaSource: "synthetic" as const,
+      assetType: "none" as const,
+      selectedAssetPath: null,
+      generatedVisualStatus: "unavailable" as const,
+      matchReason: `${params.beat.matchReason} Generated support was unavailable, so a clean fallback card will be used instead.`,
+      analysisNote: generatedResult.error ?? params.beat.analysisNote,
+      generatedAssetPlan: {
+        ...basePlan,
+        status: "unavailable",
+        error: generatedResult.error,
+      },
+    },
+    generatedVideoBeatCount: 0,
+    generatedVideoFailureCount: requestedKind === "motion" ? 1 : 0,
+  };
+}
+
 async function resolveStoryboardAssets(params: {
   userId: string;
   jobId: string;
   storyboard: StoryboardPlan;
 }) {
   const beats: StoryboardBeat[] = [];
+  let generatedVideoBeatCount = 0;
+  let generatedVideoFailureCount = 0;
 
   for (const beat of params.storyboard.beats) {
     if (beat.mediaSource !== "generated" || !beat.generatedVisualPrompt) {
@@ -602,32 +844,66 @@ async function resolveStoryboardAssets(params: {
           supportingVisuals.push({
             ...visual,
             generatedVisualStatus: visual.generatedVisualStatus === "planned" ? "generated" : visual.generatedVisualStatus,
+            generatedAssetPlan: visual.generatedAssetPlan
+              ? {
+                  ...visual.generatedAssetPlan,
+                  resolvedKind: isImagePath(visual.assetPath) ? "still" : "motion",
+                  status: "generated",
+                  assetPath: visual.assetPath,
+                  previewPath: visual.generatedPreviewPath ?? visual.generatedAssetPlan.previewPath ?? null,
+                }
+              : visual.generatedAssetPlan,
           });
           continue;
         }
 
-        const generatedPath = await createGeneratedSupportingImage({
+        const generatedResult = await createGeneratedSupportingAssetDetailed({
           userId: params.userId,
           scopeId: params.jobId,
           beatId: visual.visualId,
           prompt: visual.generatedVisualPrompt,
           format: params.storyboard.format,
+          preferredKind: visual.generatedAssetPlan?.requestedKind ?? "still",
           scope: "render",
+          allowStillFallback: true,
         });
 
         supportingVisuals.push(
-          generatedPath
+          generatedResult.path
             ? {
                 ...visual,
-                assetPath: generatedPath,
-                generatedPreviewPath: generatedPath,
+                assetPath: generatedResult.path,
+                generatedPreviewPath:
+                  generatedResult.previewPath ?? (isImagePath(generatedResult.path) ? generatedResult.path : visual.generatedPreviewPath ?? null),
                 generatedVisualStatus: "generated",
+                generatedAssetPlan: visual.generatedAssetPlan
+                  ? {
+                      ...visual.generatedAssetPlan,
+                      resolvedKind: generatedResult.resolvedKind ?? (isImagePath(generatedResult.path) ? "still" : "motion"),
+                      status: "generated",
+                      provider: generatedResult.provider,
+                      assetPath: generatedResult.path,
+                      previewPath:
+                        generatedResult.previewPath ??
+                        (isImagePath(generatedResult.path) ? generatedResult.path : visual.generatedPreviewPath ?? null),
+                      fallbackAssetPath: generatedResult.fallbackAssetPath ?? null,
+                      degradedFrom: generatedResult.degradedFrom,
+                      error: generatedResult.error,
+                    }
+                  : visual.generatedAssetPlan,
               }
             : {
                 ...visual,
                 assetPath: null,
                 generatedPreviewPath: null,
                 generatedVisualStatus: "unavailable",
+                generatedAssetPlan: visual.generatedAssetPlan
+                  ? {
+                      ...visual.generatedAssetPlan,
+                      status: "unavailable",
+                      error: generatedResult.error,
+                    }
+                  : visual.generatedAssetPlan,
               },
         );
       }
@@ -639,47 +915,102 @@ async function resolveStoryboardAssets(params: {
       continue;
     }
 
-    if (beat.selectedAssetPath && existsSync(beat.selectedAssetPath)) {
-      beats.push({
-        ...beat,
-        generatedVisualStatus: beat.generatedVisualStatus === "planned" ? "generated" : beat.generatedVisualStatus,
-      });
-      continue;
-    }
-
-    const generatedPath = await createGeneratedSupportingImage({
+    const resolvedGenerated = await resolveGeneratedBeatMedia({
       userId: params.userId,
-      scopeId: params.jobId,
-      beatId: beat.beatId,
-      prompt: beat.generatedVisualPrompt,
-      format: params.storyboard.format,
-      scope: "render",
+      jobId: params.jobId,
+      storyboard: params.storyboard,
+      beat,
     });
-
-    if (generatedPath) {
-      beats.push({
-        ...beat,
-        selectedAssetPath: generatedPath,
-        assetType: "generated",
-        generatedVisualStatus: "generated",
-      });
-      continue;
-    }
-
-    beats.push({
-      ...beat,
-      mediaSource: "synthetic",
-      assetType: "none",
-      selectedAssetPath: null,
-      generatedVisualStatus: "unavailable",
-      matchReason: `${beat.matchReason} Generated support was unavailable, so a clean fallback card will be used instead.`,
-    });
+    generatedVideoBeatCount += resolvedGenerated.generatedVideoBeatCount;
+    generatedVideoFailureCount += resolvedGenerated.generatedVideoFailureCount;
+    beats.push(resolvedGenerated.beat);
   }
 
   return {
-    ...params.storyboard,
-    beats,
+    storyboard: {
+      ...params.storyboard,
+      beats,
+    },
+    generatedVideoBeatCount,
+    generatedVideoFailureCount,
   };
+}
+
+async function applyTimedSubtitles(params: {
+  inputPath: string;
+  outputPath: string;
+  layout: LayoutPreset;
+  style: (typeof VARIANT_STYLES)[number];
+  cues: StoryboardPlan["subtitleCues"];
+}) {
+  const cues = (params.cues ?? []).filter((cue) => cue.endSeconds > cue.startSeconds);
+
+  if (cues.length === 0) {
+    await fs.copyFile(params.inputPath, params.outputPath);
+    return;
+  }
+
+  const subtitleDir = `${params.outputPath}.subtitles`;
+  await ensureDir(subtitleDir);
+
+  const textFiles: string[] = [];
+
+  try {
+    const filterParts: string[] = [];
+
+    for (let index = 0; index < cues.length; index += 1) {
+      const cue = cues[index]!;
+      const wrappedText = wrapOverlayText(cue.text, params.layout.subtitleLineLength, params.layout.subtitleMaxLines);
+      if (!wrappedText) {
+        continue;
+      }
+
+      const textFilePath = path.join(subtitleDir, `cue-${String(index + 1).padStart(2, "0")}.txt`);
+      textFiles.push(textFilePath);
+      await fs.writeFile(textFilePath, wrappedText, "utf8");
+
+      const lineCount = wrappedText.split("\n").length;
+      const textY = subtitleBoxY(params.layout, lineCount);
+      const alphaExpr = `if(lt(t,${(cue.startSeconds + SUBTITLE_FADE_DURATION).toFixed(2)}),(t-${cue.startSeconds.toFixed(2)})/${SUBTITLE_FADE_DURATION.toFixed(2)},if(gt(t,${(cue.endSeconds - SUBTITLE_FADE_DURATION).toFixed(2)}),(${cue.endSeconds.toFixed(2)}-t)/${SUBTITLE_FADE_DURATION.toFixed(2)},1))`;
+      const enableExpr = `between(t,${cue.startSeconds.toFixed(2)},${cue.endSeconds.toFixed(2)})`;
+
+      filterParts.push(
+        `drawbox=x=${params.layout.subtitleX}:y=${params.layout.subtitleY}:w=${params.layout.subtitleBoxW}:h=${params.layout.subtitleBoxH}:color=black@0.66:t=fill:enable='${enableExpr}'`,
+      );
+      filterParts.push(
+        `drawbox=x=${params.layout.subtitleX}:y=${params.layout.subtitleY}:w=${params.layout.subtitleBoxW}:h=4:color=${params.style.accentColor}@0.92:t=fill:enable='${enableExpr}'`,
+      );
+      filterParts.push(
+        `drawtext=textfile='${escapeFilterValue(textFilePath)}':expansion=none${drawtextFontOption(BODY_FONT_FILE)}:fontcolor=white:fontsize=${params.layout.subtitleFontSize}:x=(w-text_w)/2:y=${textY}:line_spacing=${params.layout.subtitleLineSpacing}:fix_bounds=1:shadowcolor=0x020617@1:shadowx=0:shadowy=4:alpha='${alphaExpr}':enable='${enableExpr}'`,
+      );
+    }
+
+    if (filterParts.length === 0) {
+      await fs.copyFile(params.inputPath, params.outputPath);
+      return;
+    }
+
+    await runBinary(FFMPEG_BIN, [
+      "-y",
+      "-i",
+      params.inputPath,
+      "-vf",
+      filterParts.join(","),
+      "-an",
+      "-r",
+      String(DEFAULT_FRAME_RATE),
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-pix_fmt",
+      "yuv420p",
+      params.outputPath,
+    ]);
+  } finally {
+    await Promise.all(textFiles.map((textFilePath) => fs.unlink(textFilePath).catch(() => undefined)));
+    await fs.rm(subtitleDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 export async function renderVideoVariants(params: {
@@ -693,11 +1024,12 @@ export async function renderVideoVariants(params: {
   const outputDir = path.join(process.cwd(), "renders", params.userId, params.jobId);
   await ensureDir(outputDir);
 
-  const resolvedStoryboard = await resolveStoryboardAssets({
+  const resolvedStoryboardResult = await resolveStoryboardAssets({
     userId: params.userId,
     jobId: params.jobId,
-    storyboard: params.storyboard,
+    storyboard: applyStoryboardEditorialTiming(params.storyboard),
   });
+  const resolvedStoryboard = applyStoryboardEditorialTiming(resolvedStoryboardResult.storyboard);
   const layout = layoutForFormat(resolvedStoryboard.format);
   const variants: RenderOutput["variants"] = [];
   const narrationTrack = await buildNarrationTrack({
@@ -724,18 +1056,27 @@ export async function renderVideoVariants(params: {
     }
 
     const silentPath = path.join(outputDir, `variant-${index + 1}.silent.mp4`);
+    const subtitledPath = path.join(outputDir, `variant-${index + 1}.subtitled.mp4`);
     const finalPath = path.join(outputDir, `variant-${index + 1}.mp4`);
     await concatClips(clipPaths, silentPath);
+    await applyTimedSubtitles({
+      inputPath: silentPath,
+      outputPath: subtitledPath,
+      layout,
+      style,
+      cues: narrationTrack.subtitleCues,
+    });
+    await fs.unlink(silentPath).catch(() => undefined);
 
     if (narrationTrack.path) {
       await muxAudioTrack({
-        videoPath: silentPath,
+        videoPath: subtitledPath,
         audioPath: narrationTrack.path,
         outputPath: finalPath,
       });
-      await fs.unlink(silentPath).catch(() => undefined);
+      await fs.unlink(subtitledPath).catch(() => undefined);
     } else {
-      await fs.rename(silentPath, finalPath);
+      await fs.rename(subtitledPath, finalPath);
     }
 
     const finalProbe = await probeMedia(finalPath);
@@ -743,8 +1084,9 @@ export async function renderVideoVariants(params: {
     variants.push({
       variantIndex: index + 1,
       path: finalPath,
-      duration: Math.round(resolvedStoryboard.beats.reduce((sum, beat) => sum + beat.durationSeconds, 0)),
+      duration: Math.round(resolvedStoryboard.durationSeconds ?? resolvedStoryboard.beats.reduce((sum, beat) => sum + beat.durationSeconds, 0)),
       hasAudio: finalProbe.hasAudio ?? false,
+      audioSummary: narrationTrack.audioComposition.summary,
     });
   }
 
@@ -754,6 +1096,9 @@ export async function renderVideoVariants(params: {
     variants,
     audioStatus: narrationTrack.path ? "generated" : "missing",
     audioError: narrationTrack.path ? narrationTrack.error : narrationTrack.error ?? "Generated narration was unavailable.",
+    audioComposition: narrationTrack.audioComposition,
+    generatedVideoBeatCount: resolvedStoryboardResult.generatedVideoBeatCount,
+    generatedVideoFailureCount: resolvedStoryboardResult.generatedVideoFailureCount,
     storyboard: resolvedStoryboard,
   };
 }

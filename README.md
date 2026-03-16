@@ -23,7 +23,7 @@ The app is intentionally local-first and monorepo-only for reliability and speed
 - Trend detection from RSS feeds (up to 3 clusters via keyword overlap / Jaccard)
 - Idea generation (3 ideas per selected trend)
 - Media upload (`mp4`, `mov`, `png`, `jpg`) stored at `/uploads/{userId}/{jobId}`
-- FFmpeg video render (intro card + captioned body + CTA outro) with 3 variants
+- Storyboard-first FFmpeg render with timed subtitles, multi-visual beats, narration, optional music ducking, and 3 variants
 - Auto format choice (`shorts` vs `landscape`) based on source orientation + duration, with user override
 - Metadata generation (title, description, hashtags, 3 caption variants, tags)
 - Scheduling recommendation (next weekday between 5-8pm local time)
@@ -101,6 +101,97 @@ npm run dev
 
 6. Open [http://localhost:3000](http://localhost:3000)
 
+## Google Cloud Run Deployment
+
+This app can be deployed to Google Cloud Run as a single full-stack service for hackathon judging.
+That is the simplest way to show the backend is running on Google Cloud because the Next.js UI and
+the `app/api/*` backend routes live in the same app.
+
+### Deployment Model
+
+- Runtime: Google Cloud Run
+- Build: `gcloud run deploy --source .`
+- Database: SQLite stored inside the running container for demo use
+- File storage: local container filesystem for `/uploads` and `/renders`
+
+Important limitations of the current hackathon deployment:
+
+- SQLite, uploads, and render outputs are ephemeral and tied to a single Cloud Run instance.
+- The deploy script forces `min-instances=1`, `max-instances=1`, `concurrency=1`, and `--no-cpu-throttling`
+  because render jobs currently run in-process after the request returns.
+- This is acceptable for a demo/hackathon deployment, but it is not a production scaling setup.
+
+### Prerequisites
+
+1. Install the Google Cloud SDK and authenticate:
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+```
+
+2. Enable required services:
+
+```bash
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+```
+
+3. Export deployment variables:
+
+```bash
+export GOOGLE_CLOUD_PROJECT="YOUR_PROJECT_ID"
+export CLOUD_RUN_REGION="us-central1"
+export CLOUD_RUN_SERVICE="creator-pilot"
+
+export LLM_API_KEY="..."
+export LLM_MODEL="gemini-2.5-pro"
+export LLM_MODEL_HARD="gemini-3.1-pro-preview"
+export LLM_IMAGE_MODEL="gemini-3.1-flash-image-preview"
+export LLM_TTS_MODEL="gemini-2.5-pro-preview-tts"
+export LLM_TTS_VOICE="Kore"
+export LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
+export ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS="true"
+export ENABLE_GENERATED_SUPPORT_MEDIA="true"
+export YOUTUBE_UPLOAD_MOCK="true"
+
+# Optional for live YouTube OAuth
+export GOOGLE_CLIENT_ID="..."
+export GOOGLE_CLIENT_SECRET="..."
+export APP_BASE_URL="https://YOUR_CLOUD_RUN_URL"
+export GOOGLE_REDIRECT_URI="https://YOUR_CLOUD_RUN_URL/api/youtube/callback"
+```
+
+For a first deploy, you can omit `APP_BASE_URL` and `GOOGLE_REDIRECT_URI`.
+The deploy script will read the Cloud Run URL after deployment and set `APP_BASE_URL` automatically.
+If Google OAuth credentials are provided and `GOOGLE_REDIRECT_URI` is omitted, the script also sets the callback URL automatically.
+
+### Deploy
+
+Run:
+
+```bash
+./scripts/deploy-cloud-run.sh
+```
+
+The service starts with:
+
+- Prisma migrations applied at boot
+- Next.js production server on port `8080`
+- Public health check endpoint at `/api/health`
+- Cloud Run URL printed at the end of the deploy script
+
+### Judge/Proof Flow
+
+After deployment:
+
+1. Open the Cloud Run service in Google Cloud Console.
+2. Record the service details page and the live logs while you hit the app.
+3. Open `https://YOUR_CLOUD_RUN_URL/api/health` to show the service is running on Cloud Run.
+
+The health endpoint returns Cloud Run metadata when deployed, including `service`, `revision`, and
+`configuration`, which is useful in the proof recording.
+
 ## Environment Variables
 
 ```env
@@ -109,7 +200,19 @@ DATABASE_URL="file:./dev.db"
 LLM_API_KEY=""
 LLM_MODEL="gemini-2.5-pro"
 LLM_MODEL_HARD="gemini-3.1-pro-preview"
+LLM_IMAGE_MODEL="gemini-3.1-flash-image-preview"
+LLM_TTS_MODEL="gemini-2.5-pro-preview-tts"
+LLM_VIDEO_MODEL="veo-3.1-fast-generate-preview"
+LLM_TTS_VOICE="Kore"
 LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
+ENABLE_GENERATED_SUPPORT_MEDIA="true"
+GENERATED_SUPPORT_MEDIA_MODE="video"
+RENDER_BACKGROUND_MUSIC_PATH=""
+RENDER_BACKGROUND_MUSIC_GAIN_DB="-22"
+RENDER_BACKGROUND_MUSIC_DUCK_DB="14"
+RENDER_ENABLE_TRANSITION_SFX="false"
+RENDER_TRANSITION_SFX_PATH=""
+RENDER_TRANSITION_SFX_GAIN_DB="-18"
 
 GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
@@ -125,14 +228,30 @@ With the default `DATABASE_URL`, Prisma uses `prisma/dev.db`.
 
 ### LLM API (Gemini default)
 
-1. Create an API key from your provider dashboard.
+1. Create a Gemini API key in Google AI Studio.
 2. Set `LLM_API_KEY`.
 3. Set `LLM_MODEL` (default model, example: `gemini-2.5-pro`).
 4. Set `LLM_MODEL_HARD` (escalation model, example: `gemini-3.1-pro-preview`).
-5. If using another compatible endpoint, set `LLM_BASE_URL`.
+5. Set `LLM_IMAGE_MODEL` (default still-image model, example: `gemini-3.1-flash-image-preview`).
+6. Set `LLM_TTS_MODEL` (default narration model, example: `gemini-2.5-pro-preview-tts`).
+7. Set `LLM_VIDEO_MODEL` (generated clip model, example: `veo-3.1-fast-generate-preview`).
+8. Set `LLM_TTS_VOICE` (example: `Kore`).
+9. If using another compatible Google endpoint, set `LLM_BASE_URL`.
+10. Set `GENERATED_SUPPORT_MEDIA_MODE` to `video` to animate generated support beats with Veo, or `image` for lower-cost still fallback only.
 
 If LLM config is missing, fallback logic is used for ideas/metadata/trend polishing.
 When configured, the app routes most prompts to `LLM_MODEL` and escalates hard/failed attempts to `LLM_MODEL_HARD`.
+Generated support stills use `LLM_IMAGE_MODEL`, render narration uses `LLM_TTS_MODEL`, and generated support clips use `LLM_VIDEO_MODEL`.
+With `GENERATED_SUPPORT_MEDIA_MODE="video"`, generated support beats request motion assets first and fall back to stills if video generation is unavailable.
+
+Audio polish is configured with:
+
+- `RENDER_BACKGROUND_MUSIC_PATH`: optional file or directory of music beds
+- `RENDER_BACKGROUND_MUSIC_GAIN_DB`: base music gain before ducking
+- `RENDER_BACKGROUND_MUSIC_DUCK_DB`: ducking target used while narration is active
+- `RENDER_ENABLE_TRANSITION_SFX`: set to `true` to layer subtle boundary SFX
+- `RENDER_TRANSITION_SFX_PATH`: optional file or directory of short SFX
+- `RENDER_TRANSITION_SFX_GAIN_DB`: SFX mix level
 
 ### Google OAuth + YouTube Data API v3
 
@@ -171,6 +290,9 @@ Default behavior:
 - This MVP runs single-user local mode by default.
 - Data model is extensible for multi-user and additional platforms later.
 - YouTube scheduling (`publishAt`) is best-effort and may be omitted by API constraints; uploads remain private.
+- The Cloud Run hackathon deploy keeps one warm instance and stores SQLite/uploads/renders on the container filesystem.
+- The current Google-only stack uses Gemini for chat, image generation, narration, and Veo-generated support clips.
+- Veo generation is a long-running operation and is only available on supported Google AI Studio / Gemini API paid access tiers. If unavailable, renders fall back to generated stills automatically.
 
 ## 4-Minute Demo Script
 
