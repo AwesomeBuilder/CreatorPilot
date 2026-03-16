@@ -41,6 +41,8 @@ RSS trends or uploaded media
 
 ## System Design (Current Architecture)
 
+![Creator Pilot architecture diagram](docs/architecture/creator-pilot-architecture.jpg)
+
 ```text
 Next.js UI
   /onboarding
@@ -99,6 +101,7 @@ Persistence + External Systems
 - File layer: uploaded assets, generated support media, and render outputs are stored on the local filesystem and streamed back through ranged responses.
 - Job model: long-running work is recorded in the `Job` table and executed in-process via the background runner in `lib/jobs.ts`; the UI polls `/api/jobs/[id]` for status and logs.
 - Deployment model: the current Cloud Run setup runs the Next.js UI and API as one service. SQLite and media files remain local to the container, so the deployment is intentionally single-instance and demo-oriented.
+- Diagram source: `npm run diagram:architecture` regenerates [`docs/architecture/creator-pilot-architecture.jpg`](docs/architecture/creator-pilot-architecture.jpg) from [`scripts/generate-architecture-diagram.mjs`](scripts/generate-architecture-diagram.mjs).
 
 ## Project Structure
 
