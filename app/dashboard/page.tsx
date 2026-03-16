@@ -962,6 +962,11 @@ export default function DashboardPage() {
                   `Uploaded ${uploadedAssets.length} media asset${uploadedAssets.length === 1 ? "" : "s"}. They are now available for idea generation and render.`,
                 );
               }}
+              onDeleted={(deletedAsset) => {
+                const assetName = deletedAsset.path.split(/[/\\]/).at(-1) ?? deletedAsset.path;
+                setAssets((current) => current.filter((asset) => asset.id !== deletedAsset.id));
+                setMessage(`Deleted ${assetName} from the media library.`);
+              }}
             />
           </CardContent>
         </Card>

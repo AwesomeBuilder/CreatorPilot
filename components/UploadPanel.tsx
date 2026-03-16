@@ -16,12 +16,15 @@ type MediaAsset = {
 type UploadPanelProps = {
   assets: MediaAsset[];
   onUploaded: (assets: MediaAsset[]) => void;
+  onDeleted: (asset: MediaAsset) => void;
 };
 
-export function UploadPanel({ assets, onUploaded }: UploadPanelProps) {
+export function UploadPanel({ assets, onUploaded, onDeleted }: UploadPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [files, setFiles] = useState<FileList | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [confirmingAssetId, setConfirmingAssetId] = useState<string | null>(null);
+  const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleUpload = async () => {
@@ -60,6 +63,29 @@ export function UploadPanel({ assets, onUploaded }: UploadPanelProps) {
     }
   };
 
+  const handleDelete = async (asset: MediaAsset) => {
+    setConfirmingAssetId(null);
+    setDeletingAssetId(asset.id);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/media/${asset.id}`, {
+        method: "DELETE",
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error ?? "Delete failed");
+      }
+
+      onDeleted((data.deleted as MediaAsset | undefined) ?? asset);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Delete failed");
+    } finally {
+      setDeletingAssetId(null);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <Card className="border-[var(--cp-border)] py-0 ring-0">
@@ -84,7 +110,12 @@ export function UploadPanel({ assets, onUploaded }: UploadPanelProps) {
           <p className="mt-2 text-xs text-[var(--cp-muted-dim)]">
             Uploaded media can be linked into idea generation and is always available during render analysis.
           </p>
-          <Button type="button" onClick={handleUpload} disabled={isUploading || !files || files.length === 0} className="mt-3 text-white">
+          <Button
+            type="button"
+            onClick={handleUpload}
+            disabled={isUploading || deletingAssetId !== null || !files || files.length === 0}
+            className="mt-3 text-white"
+          >
             {isUploading ? "Uploading..." : "Upload media"}
           </Button>
           {!files || files.length === 0 ? (
@@ -97,12 +128,54 @@ export function UploadPanel({ assets, onUploaded }: UploadPanelProps) {
       <div>
         <h3 className="mb-2 text-sm font-semibold text-[var(--cp-ink)]">Available assets ({assets.length})</h3>
         {assets.length > 0 ? (
-          <ul className="space-y-1 text-xs text-[var(--cp-muted)]">
-            {assets.map((asset) => (
-              <li key={asset.id} className="rounded border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-2 py-1">
-                {asset.type.toUpperCase()} - {asset.path.split("/").at(-1) ?? asset.path}
-              </li>
-            ))}
+          <ul className="space-y-2 text-xs text-[var(--cp-muted)]">
+            {assets.map((asset) => {
+              const isConfirming = confirmingAssetId === asset.id;
+              const isDeleting = deletingAssetId === asset.id;
+              const assetName = asset.path.split(/[/\\]/).at(-1) ?? asset.path;
+
+              return (
+                <li
+                  key={asset.id}
+                  className="flex items-center justify-between gap-3 rounded border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-2 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-[var(--cp-ink)]">{assetName}</p>
+                    <p className="mt-1 uppercase tracking-wide text-[11px] text-[var(--cp-muted)]">{asset.type}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {isConfirming ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        disabled={isUploading || deletingAssetId !== null}
+                        onClick={() => setConfirmingAssetId(null)}
+                      >
+                        Cancel
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="xs"
+                      disabled={isUploading || deletingAssetId !== null}
+                      onClick={() => {
+                        if (isConfirming) {
+                          void handleDelete(asset);
+                          return;
+                        }
+
+                        setError(null);
+                        setConfirmingAssetId(asset.id);
+                      }}
+                    >
+                      {isDeleting ? "Deleting..." : isConfirming ? "Confirm delete" : "Delete"}
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <p className="text-xs text-[var(--cp-muted-soft)]">No uploaded assets yet.</p>
