@@ -66,10 +66,11 @@ export function YoutubePanel({
     ? selectedRenderId
     : defaultVariant;
   const selectedVariant = variants.find((variant) => variant.id === effectiveRenderId) ?? null;
+  const renderHasAudio = audioStatus === "generated" || selectedVariant?.hasAudio !== false;
 
   const canUpload = useMemo(
-    () => Boolean(metadata && effectiveRenderId && variants.length > 0 && selectedVariant?.hasAudio !== false),
-    [metadata, effectiveRenderId, selectedVariant?.hasAudio, variants.length],
+    () => Boolean(metadata && effectiveRenderId && variants.length > 0 && renderHasAudio),
+    [metadata, effectiveRenderId, renderHasAudio, variants.length],
   );
 
   return (
@@ -145,8 +146,8 @@ export function YoutubePanel({
                 className="w-full rounded-lg border border-[var(--cp-border)] bg-black"
                 src={selectedVariant.previewUrl}
               />
-              <p className={`text-[11px] ${selectedVariant.hasAudio === false ? "text-[var(--cp-error)]" : "text-[var(--cp-muted)]"}`}>
-                Audio: {selectedVariant.hasAudio === false ? "missing" : audioStatus === "generated" ? "generated narration included" : "available or unknown"}
+              <p className={`text-[11px] ${renderHasAudio ? "text-[var(--cp-muted)]" : "text-[var(--cp-error)]"}`}>
+                Audio: {audioStatus === "generated" ? "generated narration included" : renderHasAudio ? "available or unknown" : "missing"}
               </p>
               {audioComposition ? (
                 <div className="rounded-lg border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-3 py-3 text-[11px] text-[var(--cp-muted)]">
@@ -168,7 +169,7 @@ export function YoutubePanel({
             </div>
           ) : null}
 
-          {audioStatus === "missing" || selectedVariant?.hasAudio === false ? (
+          {audioStatus === "missing" || !renderHasAudio ? (
             <p className="mt-2 text-xs text-[var(--cp-error)]">
               This render cannot be uploaded to YouTube until narration/audio is present.
               {audioError ? ` ${audioError}` : ""}

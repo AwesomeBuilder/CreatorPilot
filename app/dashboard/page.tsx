@@ -94,6 +94,10 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function assetDisplayName(assetPath: string) {
+  return assetPath.split(/[/\\]/).at(-1) ?? assetPath;
+}
+
 export default function DashboardPage() {
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("trend");
   const [activeStep, setActiveStep] = useState(0);
@@ -724,7 +728,7 @@ export default function DashboardPage() {
         const completedRenderOutput =
           completedRender.outputJson && typeof completedRender.outputJson === "object" ? (completedRender.outputJson as RenderJobOutput) : null;
         const firstVariantHasAudio = completedRenderOutput?.variants?.find((variant) => variant.variantIndex === 1)?.hasAudio;
-        if (completedRenderOutput?.audioStatus === "missing" || firstVariantHasAudio === false) {
+        if (completedRenderOutput?.audioStatus === "missing" || (firstVariantHasAudio === false && completedRenderOutput?.audioStatus !== "generated")) {
           setActiveStep(4);
           setMessage("Autopilot paused before upload. The selected render does not contain generated narration/audio yet.");
           return;
@@ -823,7 +827,7 @@ export default function DashboardPage() {
       const completedRenderOutput =
         completedRender.outputJson && typeof completedRender.outputJson === "object" ? (completedRender.outputJson as RenderJobOutput) : null;
       const firstVariantHasAudio = completedRenderOutput?.variants?.find((variant) => variant.variantIndex === 1)?.hasAudio;
-      if (completedRenderOutput?.audioStatus === "missing" || firstVariantHasAudio === false) {
+      if (completedRenderOutput?.audioStatus === "missing" || (firstVariantHasAudio === false && completedRenderOutput?.audioStatus !== "generated")) {
         setActiveStep(5);
         setMessage("Autopilot paused before YouTube. The selected render does not contain generated narration/audio yet.");
         return;
@@ -942,9 +946,10 @@ export default function DashboardPage() {
                                 className="mt-0.5 border-[var(--cp-border-strong)]"
                               />
                               <div className="min-w-0 flex-1">
-                                <Label htmlFor={inputId} className="block truncate text-xs font-medium text-[var(--cp-ink)]">
-                                  {asset.path}
+                                <Label htmlFor={inputId} className="block break-all text-xs font-medium text-[var(--cp-ink)]">
+                                  {assetDisplayName(asset.path)}
                                 </Label>
+                                <p className="mt-1 break-all text-[11px] text-[var(--cp-muted-dim)]">{asset.path}</p>
                                 <p className="mt-1 text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{asset.type}</p>
                               </div>
                             </div>

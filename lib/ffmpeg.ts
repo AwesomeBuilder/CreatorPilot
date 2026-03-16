@@ -76,14 +76,14 @@ export async function probeMedia(inputPath: string): Promise<ProbeResult> {
       "-v",
       "error",
       "-show_entries",
-      "stream=width,height:format=duration",
+      "stream=codec_type,width,height:format=duration",
       "-of",
       "json",
       inputPath,
     ]);
 
     const parsed = JSON.parse(stdout) as {
-      streams?: Array<{ width?: number; height?: number; codec_type?: string }>;
+      streams?: Array<{ codec_type?: string; width?: number; height?: number }>;
       format?: { duration?: string };
     };
 

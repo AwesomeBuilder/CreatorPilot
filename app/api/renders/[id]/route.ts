@@ -5,6 +5,8 @@ import { createRangedFileResponse } from "@/lib/ranged-file-response";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
+// This endpoint serves per-render files from local disk and must never be prerendered.
+export const dynamic = "force-dynamic";
 
 type Params = {
   params: Promise<{ id: string }>;

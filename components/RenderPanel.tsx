@@ -64,6 +64,10 @@ function generatedPreviewUrl(previewPath?: string | null) {
   return previewPath ? `/api/storyboard/preview?path=${encodeURIComponent(previewPath)}` : null;
 }
 
+function assetDisplayName(assetPath: string) {
+  return assetPath.split(/[/\\]/).at(-1) ?? assetPath;
+}
+
 function BeatPreviewFrame({ beat, format }: { beat: StoryboardBeat; format: StoryboardPlan["format"] }) {
   const userPreviewUrl = beat.selectedAssetId ? `/api/media/${beat.selectedAssetId}` : null;
   const generatedUrl = generatedPreviewUrl(beat.generatedPreviewPath ?? beat.selectedAssetPath);
@@ -319,9 +323,10 @@ export function RenderPanel({
                             className="mt-0.5 border-[var(--cp-border-strong)]"
                           />
                           <div className="min-w-0 flex-1">
-                            <Label htmlFor={inputId} className="block truncate text-xs font-medium text-[var(--cp-ink)]">
-                              {asset.path}
+                            <Label htmlFor={inputId} className="block break-all text-xs font-medium text-[var(--cp-ink)]">
+                              {assetDisplayName(asset.path)}
                             </Label>
+                            <p className="mt-1 break-all text-[11px] text-[var(--cp-muted-dim)]">{asset.path}</p>
                             <p className="mt-1 text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{asset.type}</p>
                           </div>
                         </div>
@@ -460,7 +465,10 @@ export function RenderPanel({
                         {previewStoryboard.assetSummaries.map((asset) => (
                           <div key={asset.assetId} className="rounded-lg border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-3 py-2">
                             <div className="flex items-center justify-between gap-3">
-                              <p className="truncate text-xs font-medium text-[var(--cp-ink)]">{asset.assetPath}</p>
+                              <div className="min-w-0 flex-1">
+                                <p className="break-all text-xs font-medium text-[var(--cp-ink)]">{assetDisplayName(asset.assetPath)}</p>
+                                <p className="mt-1 break-all text-[11px] text-[var(--cp-muted-dim)]">{asset.assetPath}</p>
+                              </div>
                               <span className="text-[11px] font-semibold text-[var(--cp-muted)]">{asset.bestFitScore}</span>
                             </div>
                             <p className="mt-1 text-xs text-[var(--cp-muted)]">{asset.compactSummary}</p>
