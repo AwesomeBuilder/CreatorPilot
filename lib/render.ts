@@ -1,48 +1,63 @@
-import { execFile } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 
-import type { RenderFormat, RenderOutput, RenderPreference } from "@/lib/types";
+import { createGeneratedSupportingImage } from "@/lib/generated-media";
+import { ensureDir, ensureFfmpegInstalled, FFMPEG_BIN, isImagePath, probeMedia, runBinary } from "@/lib/ffmpeg";
+import { buildNarrationTrack } from "@/lib/narration";
+import type {
+  NormalizedCropWindow,
+  RenderFormat,
+  RenderOutput,
+  RenderPreference,
+  StoryboardBeat,
+  StoryboardPlan,
+  StoryboardSupportingVisual,
+} from "@/lib/types";
 
-const execFileAsync = promisify(execFile);
-
-function resolveBundledBinary(relativePath: string[]) {
-  const candidate = path.join(process.cwd(), "node_modules", ...relativePath);
-  return existsSync(candidate) ? candidate : null;
-}
-
-const FFMPEG_BIN =
-  process.env.FFMPEG_PATH ??
-  resolveBundledBinary(["ffmpeg-static", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"]) ??
-  "ffmpeg";
-
-const FFPROBE_BIN =
-  process.env.FFPROBE_PATH ??
-  resolveBundledBinary([
-    "ffprobe-static",
-    "bin",
-    process.platform,
-    process.arch,
-    process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
-  ]) ??
-  "ffprobe";
-
-const INTRO_DURATION = 2;
-const OUTRO_DURATION = 2;
-const DEFAULT_SHORTS_BODY = 24;
-const DEFAULT_LANDSCAPE_BODY = 45;
+const FADE_DURATION = 0.18;
 
 const VARIANT_STYLES = [
-  { introColor: "0x0F172A", outroColor: "0x111827", accentColor: "white" },
-  { introColor: "0x1E3A8A", outroColor: "0x172554", accentColor: "yellow" },
-  { introColor: "0x065F46", outroColor: "0x064E3B", accentColor: "white" },
+  {
+    accentColor: "0xF97316",
+    titleChip: "0x111827",
+    syntheticBackground: "0x0F172A",
+    panSpeed: 0.5,
+  },
+  {
+    accentColor: "0x10B981",
+    titleChip: "0x052E2B",
+    syntheticBackground: "0x062C2C",
+    panSpeed: 0.62,
+  },
+  {
+    accentColor: "0x2563EB",
+    titleChip: "0x172554",
+    syntheticBackground: "0x0F1C3C",
+    panSpeed: 0.56,
+  },
 ];
 
-type ProbeResult = {
-  width?: number;
-  height?: number;
-  duration?: number;
+type LayoutPreset = {
+  width: number;
+  height: number;
+  titleX: number;
+  titleY: number;
+  titleBoxW: number;
+  titleBoxH: number;
+  titleFontSize: number;
+  titleLineLength: number;
+  titleDuration: number;
+  captionX: number;
+  captionY: number;
+  captionBoxW: number;
+  captionBoxH: number;
+  captionFontSize: number;
+  captionLineLength: number;
+  captionMaxLines: number;
+  labelFontSize: number;
+  labelYOffset: number;
+  captionTextYOffset: number;
 };
 
 function escapeFilterValue(value: string) {
@@ -95,10 +110,6 @@ function wrapOverlayText(text: string, maxLineLength: number, maxLines: number) 
     return "";
   }
 
-  if (lines.length > maxLines) {
-    return `${lines.slice(0, maxLines).join("\n").slice(0, -1)}...`;
-  }
-
   const hasOverflow = words.join(" ").length > lines.join(" ").length;
   if (hasOverflow) {
     const lastLine = lines[lines.length - 1] ?? "";
@@ -106,6 +117,79 @@ function wrapOverlayText(text: string, maxLineLength: number, maxLines: number) 
   }
 
   return lines.join("\n");
+}
+
+function compactOverlayCopy(text: string, maxLength: number) {
+  const normalized = sanitizeOverlayText(text, maxLength * 2);
+  const firstClause = normalized.split(/[.:;!?]/)[0]?.trim() ?? normalized;
+  if (firstClause.length <= maxLength) {
+    return firstClause;
+  }
+
+  const shortened = firstClause.slice(0, maxLength);
+  const lastSpace = shortened.lastIndexOf(" ");
+  return `${(lastSpace > 18 ? shortened.slice(0, lastSpace) : shortened).trim()}…`;
+}
+
+type BeatVisualSource = {
+  assetPath: string;
+  assetType: StoryboardBeat["assetType"];
+  cropWindow?: NormalizedCropWindow;
+  shotStartSeconds?: number;
+  shotEndSeconds?: number;
+};
+
+function beatVisualSources(beat: StoryboardBeat): BeatVisualSource[] {
+  const visuals: BeatVisualSource[] = [];
+
+  if (beat.selectedAssetPath) {
+    visuals.push({
+      assetPath: beat.selectedAssetPath,
+      assetType: beat.assetType,
+      cropWindow: beat.cropWindow,
+      shotStartSeconds: beat.shotStartSeconds,
+      shotEndSeconds: beat.shotEndSeconds,
+    });
+  }
+
+  for (const visual of beat.supportingVisuals ?? []) {
+    if (!visual.assetPath) {
+      continue;
+    }
+
+    visuals.push({
+      assetPath: visual.assetPath,
+      assetType: visual.assetType,
+      cropWindow: visual.cropWindow,
+      shotStartSeconds: visual.shotStartSeconds,
+      shotEndSeconds: visual.shotEndSeconds,
+    });
+  }
+
+  return visuals.filter(
+    (visual, index, all) =>
+      all.findIndex(
+        (candidate) =>
+          candidate.assetPath === visual.assetPath &&
+          candidate.shotStartSeconds === visual.shotStartSeconds &&
+          candidate.shotEndSeconds === visual.shotEndSeconds &&
+          candidate.cropWindow?.label === visual.cropWindow?.label,
+      ) === index,
+  );
+}
+
+function splitBeatDuration(totalSeconds: number, segmentCount: number) {
+  if (segmentCount <= 1) {
+    return [Number(totalSeconds.toFixed(2))];
+  }
+
+  const weights =
+    segmentCount === 2 ? [0.58, 0.42] : segmentCount === 3 ? [0.44, 0.32, 0.24] : Array.from({ length: segmentCount }, () => 1 / segmentCount);
+
+  const durations = weights.map((weight) => Number((totalSeconds * weight).toFixed(2)));
+  const assigned = durations.reduce((sum, value) => sum + value, 0);
+  durations[durations.length - 1] = Number((durations[durations.length - 1]! + (totalSeconds - assigned)).toFixed(2));
+  return durations;
 }
 
 async function withOverlayTextFile<T>(params: { basePath: string; suffix: string; text: string }, run: (textFilePath: string) => Promise<T>) {
@@ -119,250 +203,95 @@ async function withOverlayTextFile<T>(params: { basePath: string; suffix: string
   }
 }
 
-async function ensureDir(dirPath: string) {
-  await fs.mkdir(dirPath, { recursive: true });
-}
-
-async function runBinary(command: string, args: string[]) {
-  try {
-    await execFileAsync(command, args, {
-      maxBuffer: 8 * 1024 * 1024,
-    });
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      if (command === FFMPEG_BIN) {
-        throw new Error("FFmpeg is unavailable. Install it locally or set FFMPEG_PATH.");
-      }
-
-      if (command === FFPROBE_BIN) {
-        throw new Error("FFprobe is unavailable. Install it locally or set FFPROBE_PATH.");
-      }
-    }
-
-    throw error;
-  }
-}
-
-async function ensureFfmpegInstalled() {
-  await runBinary(FFMPEG_BIN, ["-version"]);
-  await runBinary(FFPROBE_BIN, ["-version"]);
-}
-
-function isImage(inputPath: string) {
-  return /\.(png|jpg|jpeg)$/i.test(inputPath);
-}
-
-async function probeMedia(inputPath: string): Promise<ProbeResult> {
-  try {
-    const { stdout } = await execFileAsync(FFPROBE_BIN, [
-      "-v",
-      "error",
-      "-show_entries",
-      "stream=width,height:format=duration",
-      "-of",
-      "json",
-      inputPath,
-    ]);
-
-    const parsed = JSON.parse(stdout) as {
-      streams?: Array<{ width?: number; height?: number }>;
-      format?: { duration?: string };
-    };
-
-    const stream = parsed.streams?.find((candidate) => candidate.width && candidate.height);
-
-    return {
-      width: stream?.width,
-      height: stream?.height,
-      duration: parsed.format?.duration ? Number(parsed.format.duration) : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-function splitIntoSegments(text: string) {
-  return text
-    .split(/(?<=[.!?])\s+/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-}
-
-function buildBodySegments(params: { hook: string; bulletOutline?: string[] }) {
-  const segments = [...splitIntoSegments(params.hook), ...(params.bulletOutline ?? [])]
-    .map((segment) => sanitizeOverlayText(segment, 180))
-    .filter(Boolean);
-
-  return segments.slice(0, 4);
-}
-
-function pickFormat(preference: RenderPreference, probe: ProbeResult): { format: RenderFormat; reason: string } {
+function pickFormat(preference: RenderPreference, probe: { width?: number; height?: number; duration?: number }) {
   if (preference === "shorts") {
     return {
-      format: "shorts",
+      format: "shorts" as const,
       reason: "User preference set to Shorts (1080x1920).",
     };
   }
 
   if (preference === "landscape") {
     return {
-      format: "landscape",
+      format: "landscape" as const,
       reason: "User preference set to landscape (1920x1080).",
     };
   }
 
   if (probe.height && probe.width && probe.height > probe.width) {
     return {
-      format: "shorts",
+      format: "shorts" as const,
       reason: "Auto-selected Shorts because source media is portrait.",
     };
   }
 
   if (probe.duration && probe.duration > 1 && probe.duration <= 75) {
     return {
-      format: "shorts",
+      format: "shorts" as const,
       reason: "Auto-selected Shorts because source media duration is short.",
     };
   }
 
   return {
-    format: "landscape",
+    format: "landscape" as const,
     reason: "Auto-selected landscape for longer or horizontal source media.",
   };
 }
 
 function resolutionForFormat(format: RenderFormat) {
   if (format === "shorts") {
-    return { width: 1080, height: 1920, bodyDuration: DEFAULT_SHORTS_BODY };
+    return { width: 1080, height: 1920 };
   }
 
-  return { width: 1920, height: 1080, bodyDuration: DEFAULT_LANDSCAPE_BODY };
+  return { width: 1920, height: 1080 };
 }
 
-async function createCardClip(params: {
-  outputPath: string;
-  width: number;
-  height: number;
-  duration: number;
-  text: string;
-  backgroundColor: string;
-  textColor: string;
-}) {
-  const maxLineLength = params.height > params.width ? 22 : 34;
-  const formattedText = wrapOverlayText(params.text, maxLineLength, 3);
+function layoutForFormat(format: RenderFormat): LayoutPreset {
+  if (format === "shorts") {
+    return {
+      width: 1080,
+      height: 1920,
+      titleX: 72,
+      titleY: 82,
+      titleBoxW: 936,
+      titleBoxH: 128,
+      titleFontSize: 42,
+      titleLineLength: 28,
+      titleDuration: 1.2,
+      captionX: 72,
+      captionY: 1288,
+      captionBoxW: 936,
+      captionBoxH: 230,
+      captionFontSize: 46,
+      captionLineLength: 22,
+      captionMaxLines: 3,
+      labelFontSize: 28,
+      labelYOffset: 28,
+      captionTextYOffset: 78,
+    };
+  }
 
-  await withOverlayTextFile(
-    {
-      basePath: params.outputPath,
-      suffix: "card",
-      text: formattedText,
-    },
-    async (textFilePath) => {
-      const drawtext = `drawtext=textfile='${escapeFilterValue(textFilePath)}':expansion=none:fontcolor=${
-        params.textColor
-      }:fontsize=${Math.round(params.height * 0.05)}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=${Math.round(
-        params.height * 0.012,
-      )}:fix_bounds=1:box=1:boxcolor=black@0.45:boxborderw=18`;
-
-      await runBinary(FFMPEG_BIN, [
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        `color=c=${params.backgroundColor}:s=${params.width}x${params.height}:d=${params.duration}`,
-        "-vf",
-        drawtext,
-        "-r",
-        "30",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-pix_fmt",
-        "yuv420p",
-        params.outputPath,
-      ]);
-    },
-  );
-}
-
-async function createBodyClip(params: {
-  inputPath: string;
-  outputPath: string;
-  width: number;
-  height: number;
-  duration: number;
-  captionText: string;
-  titleText: string;
-  accentColor: string;
-}) {
-  const titleLineLength = params.height > params.width ? 22 : 34;
-  const hookLineLength = params.height > params.width ? 24 : 40;
-  const topText = wrapOverlayText(params.titleText, titleLineLength, 2);
-  const bottomText = wrapOverlayText(params.captionText, hookLineLength, 3);
-  const foregroundWidth = Math.round(params.width * (params.height > params.width ? 0.88 : 0.82));
-  const foregroundHeight = Math.round(params.height * (params.height > params.width ? 0.36 : 0.72));
-  const overlayYOffset = Math.round(params.height * 0.04);
-  const titleFontSize = Math.round(params.height * (params.height > params.width ? 0.032 : 0.048));
-  const captionFontSize = Math.round(params.height * (params.height > params.width ? 0.025 : 0.038));
-
-  await withOverlayTextFile(
-    {
-      basePath: params.outputPath,
-      suffix: "title",
-      text: topText,
-    },
-    async (titleFilePath) =>
-      withOverlayTextFile(
-        {
-          basePath: params.outputPath,
-          suffix: "hook",
-          text: bottomText,
-        },
-        async (hookFilePath) => {
-          const filter = [
-            `[0:v]scale=${params.width}:${params.height}:force_original_aspect_ratio=increase,crop=${params.width}:${params.height},boxblur=26:10[bg]`,
-            `[0:v]scale=${foregroundWidth}:${foregroundHeight}:force_original_aspect_ratio=decrease[fg]`,
-            `[bg][fg]overlay=(W-w)/2:((H-h)/2)-${overlayYOffset},drawtext=textfile='${escapeFilterValue(
-              titleFilePath,
-            )}':expansion=none:fontcolor=${params.accentColor}:fontsize=${titleFontSize}:x=(w-text_w)/2:y=${Math.round(
-              params.height * 0.06,
-            )}:line_spacing=${Math.round(params.height * 0.008)}:fix_bounds=1:box=1:boxcolor=black@0.35:boxborderw=18:enable='between(t,0,2.8)',drawtext=textfile='${escapeFilterValue(
-              hookFilePath,
-            )}':expansion=none:fontcolor=white:fontsize=${captionFontSize}:x=(w-text_w)/2:y=h-text_h-${Math.round(
-              params.height * 0.12,
-            )}:line_spacing=${Math.round(params.height * 0.007)}:fix_bounds=1:box=1:boxcolor=black@0.55:boxborderw=18:enable='between(t,0.3,${
-              params.duration - 0.2
-            })'`,
-          ].join(";");
-
-          const common = [
-            "-y",
-            "-t",
-            String(params.duration),
-            "-filter_complex",
-            filter,
-            "-r",
-            "30",
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-pix_fmt",
-            "yuv420p",
-            params.outputPath,
-          ];
-
-          if (isImage(params.inputPath)) {
-            await runBinary(FFMPEG_BIN, ["-loop", "1", "-i", params.inputPath, ...common]);
-            return;
-          }
-
-          await runBinary(FFMPEG_BIN, ["-i", params.inputPath, ...common]);
-        },
-      ),
-  );
+  return {
+    width: 1920,
+    height: 1080,
+    titleX: 108,
+    titleY: 72,
+    titleBoxW: 1704,
+    titleBoxH: 116,
+    titleFontSize: 46,
+    titleLineLength: 34,
+    titleDuration: 1.25,
+    captionX: 108,
+    captionY: 636,
+    captionBoxW: 1704,
+    captionBoxH: 170,
+    captionFontSize: 44,
+    captionLineLength: 34,
+    captionMaxLines: 2,
+    labelFontSize: 26,
+    labelYOffset: 24,
+    captionTextYOffset: 60,
+  };
 }
 
 async function concatClips(clips: string[], outputPath: string) {
@@ -371,140 +300,461 @@ async function concatClips(clips: string[], outputPath: string) {
 
   await fs.writeFile(concatPath, content, "utf8");
 
+  try {
+    await runBinary(FFMPEG_BIN, [
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      concatPath,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      outputPath,
+    ]);
+  } finally {
+    await fs.unlink(concatPath).catch(() => undefined);
+  }
+}
+
+async function muxAudioTrack(params: {
+  videoPath: string;
+  audioPath: string;
+  outputPath: string;
+}) {
   await runBinary(FFMPEG_BIN, [
     "-y",
-    "-f",
-    "concat",
-    "-safe",
-    "0",
     "-i",
-    concatPath,
+    params.videoPath,
+    "-i",
+    params.audioPath,
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-shortest",
+    params.outputPath,
+  ]);
+}
+
+function beatLabel(beat: StoryboardBeat) {
+  return beat.purpose.toUpperCase();
+}
+
+function cropFilterPrefix(cropWindow?: NormalizedCropWindow) {
+  if (!cropWindow) {
+    return null;
+  }
+
+  return `crop=iw*${cropWindow.width}:ih*${cropWindow.height}:iw*${cropWindow.left}:ih*${cropWindow.top}`;
+}
+
+function animatedImageFilter(layout: LayoutPreset, duration: number, panSpeed: number, cropWindow?: NormalizedCropWindow) {
+  const scaledWidth = Math.round(layout.width * 1.12);
+  const scaledHeight = Math.round(layout.height * 1.12);
+  return [
+    cropFilterPrefix(cropWindow),
+    `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase`,
+    `crop=${layout.width}:${layout.height}:x='(in_w-out_w)/2+((in_w-out_w)*0.10)*sin(t*${panSpeed})':y='(in_h-out_h)/2+((in_h-out_h)*0.08)*cos(t*${panSpeed})'`,
+    "setsar=1",
+    "fps=30",
+    `trim=duration=${duration}`,
+    "setpts=PTS-STARTPTS",
+  ]
+    .filter(Boolean)
+    .join(",");
+}
+
+function videoFilter(layout: LayoutPreset, duration: number, extensionDuration: number) {
+  const filters = [
+    `scale=${layout.width}:${layout.height}:force_original_aspect_ratio=increase`,
+    `crop=${layout.width}:${layout.height}`,
+    "setsar=1",
+    "fps=30",
+    "eq=saturation=1.03:brightness=-0.01:contrast=1.04",
+    "setpts=PTS-STARTPTS",
+  ];
+
+  if (extensionDuration > 0) {
+    filters.push(`tpad=stop_mode=clone:stop_duration=${extensionDuration}`);
+  }
+
+  filters.push(`trim=duration=${duration}`);
+  return filters.join(",");
+}
+
+async function createSyntheticClip(params: {
+  outputPath: string;
+  layout: LayoutPreset;
+  beat: StoryboardBeat;
+  style: (typeof VARIANT_STYLES)[number];
+}) {
+  const titleText = wrapOverlayText(params.beat.title, params.layout.titleLineLength, 2);
+  const captionText = wrapOverlayText(
+    compactOverlayCopy(params.beat.caption || params.beat.title, params.layout.captionLineLength * 2),
+    params.layout.captionLineLength,
+    Math.min(2, params.layout.captionMaxLines),
+  );
+  const labelText = beatLabel(params.beat);
+
+  await withOverlayTextFile({ basePath: params.outputPath, suffix: "title", text: titleText }, async (titleFilePath) =>
+    withOverlayTextFile({ basePath: params.outputPath, suffix: "caption", text: captionText }, async (captionFilePath) =>
+      withOverlayTextFile({ basePath: params.outputPath, suffix: "label", text: labelText }, async (labelFilePath) => {
+        const filter = [
+          `drawbox=x=${params.layout.titleX}:y=${params.layout.titleY}:w=${params.layout.titleBoxW}:h=${params.layout.titleBoxH}:color=${params.style.titleChip}@0.88:t=fill:enable='between(t,0,${params.layout.titleDuration})'`,
+          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=${params.layout.captionBoxH}:color=black@0.56:t=fill`,
+          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=4:color=${params.style.accentColor}@1:t=fill`,
+          `drawtext=textfile='${escapeFilterValue(titleFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.titleFontSize}:x=${params.layout.titleX + 36}:y=${params.layout.titleY + 28}:line_spacing=10:fix_bounds=1:enable='between(t,0,${params.layout.titleDuration})'`,
+          `drawtext=textfile='${escapeFilterValue(labelFilePath)}':expansion=none:fontcolor=${params.style.accentColor}:fontsize=${params.layout.labelFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.labelYOffset}:fix_bounds=1`,
+          `drawtext=textfile='${escapeFilterValue(captionFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.captionFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.captionTextYOffset}:line_spacing=14:fix_bounds=1`,
+          `fade=t=in:st=0:d=${FADE_DURATION}`,
+          `fade=t=out:st=${Math.max(0.1, params.beat.durationSeconds - FADE_DURATION)}:d=${FADE_DURATION}`,
+        ].join(",");
+
+        await runBinary(FFMPEG_BIN, [
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          `color=c=${params.style.syntheticBackground}:s=${params.layout.width}x${params.layout.height}:d=${params.beat.durationSeconds}`,
+          "-vf",
+          filter,
+          "-r",
+          "30",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-pix_fmt",
+          "yuv420p",
+          params.outputPath,
+        ]);
+      }),
+    ),
+  );
+}
+
+async function createVisualSegmentClip(params: {
+  outputPath: string;
+  layout: LayoutPreset;
+  durationSeconds: number;
+  visual: BeatVisualSource;
+  style: (typeof VARIANT_STYLES)[number];
+}) {
+  const isStill = isImagePath(params.visual.assetPath);
+  const probe = await probeMedia(params.visual.assetPath);
+  const inputDuration = isStill
+    ? params.durationSeconds
+    : Math.max(
+        0.8,
+        typeof params.visual.shotStartSeconds === "number" && typeof params.visual.shotEndSeconds === "number"
+          ? params.visual.shotEndSeconds - params.visual.shotStartSeconds
+          : probe.duration ?? params.durationSeconds,
+      );
+
+  const visualFilter = isStill
+    ? animatedImageFilter(params.layout, params.durationSeconds, params.style.panSpeed, params.visual.cropWindow)
+    : videoFilter(params.layout, params.durationSeconds, Math.max(0, params.durationSeconds - inputDuration));
+
+  const commonOutput = [
+    "-y",
+    "-vf",
+    visualFilter,
+    "-an",
+    "-r",
+    "30",
     "-c:v",
     "libx264",
     "-preset",
     "veryfast",
     "-pix_fmt",
     "yuv420p",
-    "-movflags",
-    "+faststart",
-    outputPath,
-  ]);
+    params.outputPath,
+  ];
 
-  await fs.unlink(concatPath).catch(() => undefined);
+  if (isStill) {
+    await runBinary(FFMPEG_BIN, ["-loop", "1", "-i", params.visual.assetPath, "-t", String(params.durationSeconds), ...commonOutput]);
+    return;
+  }
+
+  const start = params.visual.shotStartSeconds ?? 0;
+  await runBinary(FFMPEG_BIN, ["-ss", String(start), "-t", String(inputDuration), "-i", params.visual.assetPath, ...commonOutput]);
+}
+
+async function applyBeatOverlay(params: {
+  inputPath: string;
+  outputPath: string;
+  layout: LayoutPreset;
+  beat: StoryboardBeat;
+  style: (typeof VARIANT_STYLES)[number];
+}) {
+  const titleText = wrapOverlayText(params.beat.title, params.layout.titleLineLength, 2);
+  const captionText = wrapOverlayText(
+    compactOverlayCopy(params.beat.caption || params.beat.title, params.layout.captionLineLength * 2),
+    params.layout.captionLineLength,
+    Math.min(2, params.layout.captionMaxLines),
+  );
+  const labelText = beatLabel(params.beat);
+
+  await withOverlayTextFile({ basePath: params.outputPath, suffix: "title", text: titleText }, async (titleFilePath) =>
+    withOverlayTextFile({ basePath: params.outputPath, suffix: "caption", text: captionText }, async (captionFilePath) =>
+      withOverlayTextFile({ basePath: params.outputPath, suffix: "label", text: labelText }, async (labelFilePath) => {
+        const filter = [
+          `drawbox=x=${params.layout.titleX}:y=${params.layout.titleY}:w=${params.layout.titleBoxW}:h=${params.layout.titleBoxH}:color=${params.style.titleChip}@0.84:t=fill:enable='between(t,0,${params.layout.titleDuration})'`,
+          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=${params.layout.captionBoxH}:color=black@0.56:t=fill`,
+          `drawbox=x=${params.layout.captionX}:y=${params.layout.captionY}:w=${params.layout.captionBoxW}:h=4:color=${params.style.accentColor}@1:t=fill`,
+          `drawtext=textfile='${escapeFilterValue(titleFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.titleFontSize}:x=${params.layout.titleX + 36}:y=${params.layout.titleY + 24}:line_spacing=10:fix_bounds=1:enable='between(t,0,${params.layout.titleDuration})'`,
+          `drawtext=textfile='${escapeFilterValue(labelFilePath)}':expansion=none:fontcolor=${params.style.accentColor}:fontsize=${params.layout.labelFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.labelYOffset}:fix_bounds=1`,
+          `drawtext=textfile='${escapeFilterValue(captionFilePath)}':expansion=none:fontcolor=white:fontsize=${params.layout.captionFontSize}:x=${params.layout.captionX + 34}:y=${params.layout.captionY + params.layout.captionTextYOffset}:line_spacing=12:fix_bounds=1`,
+          `fade=t=in:st=0:d=${FADE_DURATION}`,
+          `fade=t=out:st=${Math.max(0.1, params.beat.durationSeconds - FADE_DURATION)}:d=${FADE_DURATION}`,
+        ].join(",");
+
+        await runBinary(FFMPEG_BIN, [
+          "-y",
+          "-i",
+          params.inputPath,
+          "-vf",
+          filter,
+          "-an",
+          "-r",
+          "30",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-pix_fmt",
+          "yuv420p",
+          params.outputPath,
+        ]);
+      }),
+    ),
+  );
+}
+
+async function createBeatClip(params: {
+  outputPath: string;
+  layout: LayoutPreset;
+  beat: StoryboardBeat;
+  style: (typeof VARIANT_STYLES)[number];
+}) {
+  const visuals = beatVisualSources(params.beat);
+  if (visuals.length === 0) {
+    await createSyntheticClip(params);
+    return;
+  }
+  const segmentDurations = splitBeatDuration(params.beat.durationSeconds, visuals.length);
+  const segmentDir = `${params.outputPath}.segments`;
+  await ensureDir(segmentDir);
+
+  const visualSegmentPaths: string[] = [];
+  for (let index = 0; index < visuals.length; index += 1) {
+    const segmentPath = path.join(segmentDir, `segment-${index + 1}.mp4`);
+    await createVisualSegmentClip({
+      outputPath: segmentPath,
+      layout: params.layout,
+      durationSeconds: segmentDurations[index] ?? params.beat.durationSeconds,
+      visual: visuals[index]!,
+      style: params.style,
+    });
+    visualSegmentPaths.push(segmentPath);
+  }
+
+  const visualOnlyPath = `${params.outputPath}.visual.mp4`;
+  await concatClips(visualSegmentPaths, visualOnlyPath);
+  await applyBeatOverlay({
+    inputPath: visualOnlyPath,
+    outputPath: params.outputPath,
+    layout: params.layout,
+    beat: params.beat,
+    style: params.style,
+  });
+  await fs.rm(segmentDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.unlink(visualOnlyPath).catch(() => undefined);
+}
+
+async function resolveStoryboardAssets(params: {
+  userId: string;
+  jobId: string;
+  storyboard: StoryboardPlan;
+}) {
+  const beats: StoryboardBeat[] = [];
+
+  for (const beat of params.storyboard.beats) {
+    if (beat.mediaSource !== "generated" || !beat.generatedVisualPrompt) {
+      const supportingVisuals: StoryboardSupportingVisual[] = [];
+      for (const visual of beat.supportingVisuals ?? []) {
+        if (visual.mediaSource !== "generated" || !visual.generatedVisualPrompt) {
+          supportingVisuals.push(visual);
+          continue;
+        }
+
+        if (visual.assetPath && existsSync(visual.assetPath)) {
+          supportingVisuals.push({
+            ...visual,
+            generatedVisualStatus: visual.generatedVisualStatus === "planned" ? "generated" : visual.generatedVisualStatus,
+          });
+          continue;
+        }
+
+        const generatedPath = await createGeneratedSupportingImage({
+          userId: params.userId,
+          scopeId: params.jobId,
+          beatId: visual.visualId,
+          prompt: visual.generatedVisualPrompt,
+          format: params.storyboard.format,
+          scope: "render",
+        });
+
+        supportingVisuals.push(
+          generatedPath
+            ? {
+                ...visual,
+                assetPath: generatedPath,
+                generatedPreviewPath: generatedPath,
+                generatedVisualStatus: "generated",
+              }
+            : {
+                ...visual,
+                assetPath: null,
+                generatedPreviewPath: null,
+                generatedVisualStatus: "unavailable",
+              },
+        );
+      }
+
+      beats.push({
+        ...beat,
+        supportingVisuals,
+      });
+      continue;
+    }
+
+    if (beat.selectedAssetPath && existsSync(beat.selectedAssetPath)) {
+      beats.push({
+        ...beat,
+        generatedVisualStatus: beat.generatedVisualStatus === "planned" ? "generated" : beat.generatedVisualStatus,
+      });
+      continue;
+    }
+
+    const generatedPath = await createGeneratedSupportingImage({
+      userId: params.userId,
+      scopeId: params.jobId,
+      beatId: beat.beatId,
+      prompt: beat.generatedVisualPrompt,
+      format: params.storyboard.format,
+      scope: "render",
+    });
+
+    if (generatedPath) {
+      beats.push({
+        ...beat,
+        selectedAssetPath: generatedPath,
+        assetType: "generated",
+        generatedVisualStatus: "generated",
+      });
+      continue;
+    }
+
+    beats.push({
+      ...beat,
+      mediaSource: "synthetic",
+      assetType: "none",
+      selectedAssetPath: null,
+      generatedVisualStatus: "unavailable",
+      matchReason: `${beat.matchReason} Generated support was unavailable, so a clean fallback card will be used instead.`,
+    });
+  }
+
+  return {
+    ...params.storyboard,
+    beats,
+  };
 }
 
 export async function renderVideoVariants(params: {
   userId: string;
   jobId: string;
-  mediaPaths: string[];
   title: string;
-  hook: string;
-  bulletOutline?: string[];
-  cta: string;
-  preference: RenderPreference;
+  storyboard: StoryboardPlan;
 }): Promise<RenderOutput> {
-  if (!params.mediaPaths.length) {
-    throw new Error("No media files were provided for rendering.");
-  }
-
   await ensureFfmpegInstalled();
-
-  const firstMedia = params.mediaPaths[0];
-  const probe = await probeMedia(firstMedia);
-  const picked = pickFormat(params.preference, probe);
-  const { width, height, bodyDuration } = resolutionForFormat(picked.format);
 
   const outputDir = path.join(process.cwd(), "renders", params.userId, params.jobId);
   await ensureDir(outputDir);
 
-  const variants = [] as RenderOutput["variants"];
-  const bodySegments = buildBodySegments({
-    hook: params.hook,
-    bulletOutline: params.bulletOutline,
+  const resolvedStoryboard = await resolveStoryboardAssets({
+    userId: params.userId,
+    jobId: params.jobId,
+    storyboard: params.storyboard,
   });
-  const effectiveSegments = bodySegments.length > 0 ? bodySegments : [params.hook];
+  const layout = layoutForFormat(resolvedStoryboard.format);
+  const variants: RenderOutput["variants"] = [];
+  const narrationTrack = await buildNarrationTrack({
+    userId: params.userId,
+    jobId: params.jobId,
+    storyboard: resolvedStoryboard,
+  });
 
-  const effectiveBodyDuration = Math.max(
-    picked.format === "shorts" ? 14 : 16,
-    Math.min(bodyDuration, effectiveSegments.length * (picked.format === "shorts" ? 4 : 5)),
-  );
-
-  for (let index = 0; index < 3; index += 1) {
-    const style = VARIANT_STYLES[index % VARIANT_STYLES.length];
-    const variantIndex = index + 1;
-    const tempDir = path.join(outputDir, `tmp-${variantIndex}`);
-
+  for (let index = 0; index < VARIANT_STYLES.length; index += 1) {
+    const style = VARIANT_STYLES[index];
+    const tempDir = path.join(outputDir, `tmp-${index + 1}`);
     await ensureDir(tempDir);
 
-    const introPath = path.join(tempDir, `intro-${variantIndex}.mp4`);
-    const outroPath = path.join(tempDir, `outro-${variantIndex}.mp4`);
-    const finalPath = path.join(outputDir, `variant-${variantIndex}.mp4`);
-    const bodyClipPaths: string[] = [];
-    const baseSegmentDuration = Math.max(3, Math.floor(effectiveBodyDuration / effectiveSegments.length));
-
-    await createCardClip({
-      outputPath: introPath,
-      width,
-      height,
-      duration: INTRO_DURATION,
-      text: params.title,
-      backgroundColor: style.introColor,
-      textColor: style.accentColor,
-    });
-
-    let elapsedBodyDuration = 0;
-
-    for (let segmentIndex = 0; segmentIndex < effectiveSegments.length; segmentIndex += 1) {
-      const remainingDuration = effectiveBodyDuration - elapsedBodyDuration;
-      const segmentDuration =
-        segmentIndex === effectiveSegments.length - 1 ? remainingDuration : Math.min(baseSegmentDuration, remainingDuration);
-
-      if (segmentDuration <= 0) {
-        break;
-      }
-
-      const bodyPath = path.join(tempDir, `body-${variantIndex}-${segmentIndex + 1}.mp4`);
-
-      await createBodyClip({
-        inputPath: params.mediaPaths[segmentIndex % params.mediaPaths.length] ?? firstMedia,
-        outputPath: bodyPath,
-        width,
-        height,
-        duration: segmentDuration,
-        captionText: effectiveSegments[segmentIndex] ?? params.hook,
-        titleText: params.title,
-        accentColor: style.accentColor,
+    const clipPaths: string[] = [];
+    for (const beat of resolvedStoryboard.beats) {
+      const clipPath = path.join(tempDir, `${beat.beatId}.mp4`);
+      await createBeatClip({
+        outputPath: clipPath,
+        layout,
+        beat,
+        style,
       });
-
-      bodyClipPaths.push(bodyPath);
-      elapsedBodyDuration += segmentDuration;
+      clipPaths.push(clipPath);
     }
 
-    await createCardClip({
-      outputPath: outroPath,
-      width,
-      height,
-      duration: OUTRO_DURATION,
-      text: params.cta,
-      backgroundColor: style.outroColor,
-      textColor: "white",
-    });
+    const silentPath = path.join(outputDir, `variant-${index + 1}.silent.mp4`);
+    const finalPath = path.join(outputDir, `variant-${index + 1}.mp4`);
+    await concatClips(clipPaths, silentPath);
 
-    await concatClips([introPath, ...bodyClipPaths, outroPath], finalPath);
+    if (narrationTrack.path) {
+      await muxAudioTrack({
+        videoPath: silentPath,
+        audioPath: narrationTrack.path,
+        outputPath: finalPath,
+      });
+      await fs.unlink(silentPath).catch(() => undefined);
+    } else {
+      await fs.rename(silentPath, finalPath);
+    }
 
-    const duration = INTRO_DURATION + OUTRO_DURATION + elapsedBodyDuration;
+    const finalProbe = await probeMedia(finalPath);
 
     variants.push({
-      variantIndex,
+      variantIndex: index + 1,
       path: finalPath,
-      duration,
+      duration: Math.round(resolvedStoryboard.beats.reduce((sum, beat) => sum + beat.durationSeconds, 0)),
+      hasAudio: finalProbe.hasAudio ?? false,
     });
   }
 
   return {
-    format: picked.format,
-    reason: picked.reason,
+    format: resolvedStoryboard.format,
+    reason: resolvedStoryboard.coverageSummary,
     variants,
+    audioStatus: narrationTrack.path ? "generated" : "missing",
+    audioError: narrationTrack.path ? narrationTrack.error : narrationTrack.error ?? "Generated narration was unavailable.",
+    storyboard: resolvedStoryboard,
   };
 }
 

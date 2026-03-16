@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { SearchIcon, UploadIcon, XIcon } from "lucide-react";
 
 import { BrandLogo } from "@/components/BrandLogo";
 import { IdeaCards } from "@/components/IdeaCards";
@@ -13,9 +14,12 @@ import { TrendPicker } from "@/components/TrendPicker";
 import { UploadPanel } from "@/components/UploadPanel";
 import { YoutubePanel } from "@/components/YoutubePanel";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { findMatchingCuratedPreset } from "@/lib/default-sources";
-import type { Idea, MetadataResult, ScheduleRecommendation, Trend } from "@/lib/types";
+import type { Idea, MetadataResult, ScheduleRecommendation, StoryboardPlan, Trend } from "@/lib/types";
 
 type ProfilePayload = {
   user: {
@@ -48,11 +52,16 @@ type JobRecord = {
   renders?: Array<{ id: string; variantIndex: number; path: string; duration: number }>;
 };
 
+type RenderJobOutput = {
+  audioStatus?: "generated" | "missing";
+  audioError?: string | null;
+  variants?: Array<{ variantIndex: number; path: string; duration: number; hasAudio?: boolean }>;
+};
+
 const STEPS = [
   "Fetch trends",
   "Select trend",
   "Generate ideas",
-  "Upload media",
   "Render video",
   "Generate metadata",
   "Upload to YouTube",
@@ -66,12 +75,15 @@ export default function DashboardPage() {
   const [activeStep, setActiveStep] = useState(0);
   const [profile, setProfile] = useState<ProfilePayload | null>(null);
   const [assets, setAssets] = useState<MediaAsset[]>([]);
+  const [isMediaPanelOpen, setIsMediaPanelOpen] = useState(false);
 
   const [trends, setTrends] = useState<Trend[]>([]);
   const [selectedTrendIndex, setSelectedTrendIndex] = useState(0);
+  const [trendSearchQuery, setTrendSearchQuery] = useState("");
 
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [selectedIdeaIndex, setSelectedIdeaIndex] = useState(0);
+  const [linkUploadedMediaToIdeas, setLinkUploadedMediaToIdeas] = useState(true);
 
   const [metadata, setMetadata] = useState<MetadataResult | null>(null);
   const [schedule, setSchedule] = useState<ScheduleRecommendation | null>(null);
@@ -94,15 +106,47 @@ export default function DashboardPage() {
   const sourcePresetMatch = profile ? findMatchingCuratedPreset(profile.sources.map((source) => source.url)) : null;
   const sourceMode = profile ? (profile.sources.every((source) => source.isCurated) || sourcePresetMatch ? "curated" : "custom") : null;
   const nicheLabel = profile?.user.niche ?? "General / Mixed";
+  const latestRenderOutput =
+    latestRenderJob?.outputJson && typeof latestRenderJob.outputJson === "object" ? (latestRenderJob.outputJson as RenderJobOutput) : null;
 
   const renderVariantOptions = useMemo(() => {
+    const outputVariants = latestRenderOutput?.variants ?? [];
     return (latestRenderJob?.renders ?? []).map((render) => ({
       id: render.id,
       label: `Variant ${render.variantIndex} (${render.duration}s)`,
       path: render.path,
       previewUrl: `/api/renders/${render.id}`,
+      hasAudio: outputVariants.find((variant) => variant.variantIndex === render.variantIndex)?.hasAudio,
     }));
-  }, [latestRenderJob?.renders]);
+  }, [latestRenderJob?.renders, latestRenderOutput?.variants]);
+
+  const filteredTrendEntries = useMemo(() => {
+    const query = trendSearchQuery.trim().toLowerCase();
+    return trends
+      .map((trend, index) => ({ trend, index }))
+      .filter(({ trend }) => {
+        if (!query) {
+          return true;
+        }
+
+        const searchableText = [
+          trend.trendTitle,
+          trend.summary,
+          trend.fitLabel,
+          trend.fitReason,
+          ...trend.links,
+          ...(trend.sourceLinks ?? []).flatMap((link) => [link.title, link.url, link.sourceUrl]),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return searchableText.includes(query);
+      });
+  }, [trendSearchQuery, trends]);
+
+  const filteredSelectedTrendIndex = filteredTrendEntries.findIndex((entry) => entry.index === selectedTrendIndex);
+  const canContinueToIdeas = Boolean(selectedTrend) && (trendSearchQuery.trim().length === 0 || filteredSelectedTrendIndex >= 0);
 
   const loadProfile = async () => {
     const response = await fetch("/api/profile");
@@ -196,6 +240,8 @@ export default function DashboardPage() {
 
       setTrends(fetchedTrends);
       setSelectedTrendIndex(0);
+      setSelectedIdeaIndex(0);
+      setTrendSearchQuery("");
       setIdeas([]);
       setMetadata(null);
       setSchedule(null);
@@ -228,7 +274,10 @@ export default function DashboardPage() {
       const response = await fetch("/api/ideas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trend: trendForIdeas }),
+        body: JSON.stringify({
+          trend: trendForIdeas,
+          mediaAssetIds: linkUploadedMediaToIdeas ? assets.map((asset) => asset.id) : [],
+        }),
       });
 
       const data = await response.json();
@@ -237,14 +286,19 @@ export default function DashboardPage() {
       }
 
       const completed = await waitForJob(data.jobId, "ideas");
-      const output = completed.outputJson as { ideas?: Idea[] };
+      const output = completed.outputJson as { ideas?: Idea[]; linkedMediaCount?: number };
       const generatedIdeas = output.ideas ?? [];
+      const linkedMediaCount = output.linkedMediaCount ?? 0;
 
       setIdeas(generatedIdeas);
       setSelectedIdeaIndex(0);
       setMetadata(null);
       setSchedule(null);
-      setMessage(`Generated ${generatedIdeas.length} idea candidates.`);
+      setMessage(
+        linkedMediaCount > 0
+          ? `Generated ${generatedIdeas.length} idea candidates using ${linkedMediaCount} uploaded media asset${linkedMediaCount === 1 ? "" : "s"}.`
+          : `Generated ${generatedIdeas.length} idea candidates.`,
+      );
       setActiveStep(2);
       return generatedIdeas;
     } catch (jobError) {
@@ -254,10 +308,12 @@ export default function DashboardPage() {
   };
 
   const startRenderJobWithOptions = async (payload: {
+    trend: Trend;
     idea: Idea;
     mediaAssetIds: string[];
     preference: "auto" | "shorts" | "landscape";
     allowIrrelevantMedia: boolean;
+    storyboard?: StoryboardPlan;
   }) => {
     const response = await fetch("/api/render", {
       method: "POST",
@@ -273,8 +329,13 @@ export default function DashboardPage() {
     return data.jobId as string;
   };
 
-  const assessMediaForIdea = async (payload: { idea: Idea; mediaAssetIds: string[] }) => {
-    const response = await fetch("/api/media/relevance", {
+  const analyzeStoryboardForIdea = async (payload: {
+    trend: Trend;
+    idea: Idea;
+    mediaAssetIds: string[];
+    preference: "auto" | "shorts" | "landscape";
+  }) => {
+    const response = await fetch("/api/storyboard", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -282,10 +343,10 @@ export default function DashboardPage() {
 
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.error ?? "Failed to assess media relevance");
+      throw new Error(data.error ?? "Failed to analyze storyboard coverage");
     }
 
-    return data.assessment as { shouldBlock: boolean; summary: string };
+    return data as { storyboard: StoryboardPlan; assessment: { shouldBlock: boolean; summary: string } };
   };
 
   const handleRenderJobCreated = async (jobId: string) => {
@@ -296,7 +357,7 @@ export default function DashboardPage() {
       const completed = await waitForJob(jobId, "render");
       setLatestRenderJob(completed);
       setMessage("Rendering complete. Generating metadata and schedule...");
-      setActiveStep(5);
+      setActiveStep(4);
       const metadataResult = await generateMetadataAndSchedule({ advanceStep: true });
       if (!metadataResult) {
         setMessage("Rendering complete. Metadata generation needs attention.");
@@ -351,7 +412,7 @@ export default function DashboardPage() {
       setSchedule(scheduleData.schedule);
       setMessage("Metadata and scheduling recommendation generated.");
       if (shouldAdvance) {
-        setActiveStep(6);
+        setActiveStep(5);
       }
       return { metadata: metadataData.metadata as MetadataResult, schedule: scheduleData.schedule as ScheduleRecommendation };
     } catch (generationError) {
@@ -461,34 +522,42 @@ export default function DashboardPage() {
 
       if (assets.length === 0) {
         setActiveStep(3);
-        setMessage("Autopilot paused at Upload media. Trends and ideas come from your feeds and niche; uploaded media is only used at render.");
+        setMessage("Autopilot paused before render. Upload media from the top-right button, then continue to render.");
         return;
       }
 
-      const mediaAssessment = await assessMediaForIdea({
+      const storyboardResult = await analyzeStoryboardForIdea({
+        trend: trendForPipeline,
         idea: ideaForPipeline,
         mediaAssetIds: assets.map((asset) => asset.id),
+        preference: "auto",
       });
 
-      if (mediaAssessment.shouldBlock) {
+      if (storyboardResult.storyboard.shouldBlock) {
         setActiveStep(3);
-        setMessage(`Autopilot paused at Upload media. ${mediaAssessment.summary}`);
+        setMessage(`Autopilot paused before render. ${storyboardResult.storyboard.coverageSummary}`);
         return;
       }
 
-      setActiveStep(4);
-      setMessage(`Autopilot using ${assets.length} existing media asset${assets.length === 1 ? "" : "s"} and starting render...`);
+      setActiveStep(3);
+      setMessage(
+        `Autopilot using ${assets.length} existing media asset${assets.length === 1 ? "" : "s"}${
+          storyboardResult.storyboard.generatedSupportUsed ? " plus generated support for uncovered beats" : ""
+        } and starting render...`,
+      );
       const renderJobId = await startRenderJobWithOptions({
+        trend: trendForPipeline,
         idea: ideaForPipeline,
         mediaAssetIds: assets.map((asset) => asset.id),
         preference: "auto",
         allowIrrelevantMedia: false,
+        storyboard: storyboardResult.storyboard,
       });
 
       const completedRender = await waitForJob(renderJobId, "render");
       setLatestRenderJob(completedRender);
 
-      setActiveStep(5);
+      setActiveStep(4);
       const metadataResult = await generateMetadataAndSchedule({
         trend: trendForPipeline,
         idea: ideaForPipeline,
@@ -496,18 +565,27 @@ export default function DashboardPage() {
       });
 
       if (!metadataResult) {
-        setActiveStep(5);
+        setActiveStep(4);
         return;
       }
 
       const defaultVariantId = completedRender.renders?.[0]?.id;
       if (!defaultVariantId) {
-        setActiveStep(6);
+        setActiveStep(5);
         setMessage("Autopilot completed through metadata. No render variant available to upload.");
         return;
       }
 
-      setActiveStep(6);
+      const completedRenderOutput =
+        completedRender.outputJson && typeof completedRender.outputJson === "object" ? (completedRender.outputJson as RenderJobOutput) : null;
+      const firstVariantHasAudio = completedRenderOutput?.variants?.find((variant) => variant.variantIndex === 1)?.hasAudio;
+      if (completedRenderOutput?.audioStatus === "missing" || firstVariantHasAudio === false) {
+        setActiveStep(5);
+        setMessage("Autopilot paused before YouTube. The selected render does not contain generated narration/audio yet.");
+        return;
+      }
+
+      setActiveStep(5);
       const youtubeJob = await startYoutubeUpload({
         renderId: defaultVariantId,
         publishAt: metadataResult.schedule.publishAt,
@@ -515,17 +593,63 @@ export default function DashboardPage() {
       });
 
       if (!youtubeJob) {
-        setActiveStep(6);
+        setActiveStep(5);
         return;
       }
 
-      setActiveStep(6);
+      setActiveStep(5);
       setMessage("Autopilot completed all available steps.");
     } catch (autopilotError) {
       setError(autopilotError instanceof Error ? autopilotError.message : "Autopilot failed");
     } finally {
       setIsAutopilotRunning(false);
     }
+  };
+
+  const handleTrendSelect = (index: number) => {
+    setSelectedTrendIndex(index);
+    setIdeas([]);
+    setSelectedIdeaIndex(0);
+    setMetadata(null);
+    setSchedule(null);
+    setError(null);
+    setMessage("Trend selected. Generate ideas when ready.");
+  };
+
+  const buildCustomTrend = (query: string): Trend => ({
+    trendTitle: query.trim(),
+    summary: `Custom topic search for ${query.trim()}. Turn it into a creator-ready angle${linkUploadedMediaToIdeas && assets.length > 0 ? " that can be supported by the uploaded media." : " that fits the creator's niche."}`,
+    links: [],
+    fitLabel: "Open feed",
+    fitReason: "Added from manual trend search.",
+  });
+
+  const applyTypedTrend = async (options?: { generateIdeasNow?: boolean }) => {
+    const query = trendSearchQuery.trim();
+
+    if (!query) {
+      setError("Enter a trend to search or use as a custom topic.");
+      return;
+    }
+
+    const customTrend = buildCustomTrend(query);
+    const remainingTrends = trends.filter((trend) => trend.trendTitle.trim().toLowerCase() !== query.toLowerCase());
+
+    setTrends([customTrend, ...remainingTrends]);
+    setSelectedTrendIndex(0);
+    setIdeas([]);
+    setSelectedIdeaIndex(0);
+    setMetadata(null);
+    setSchedule(null);
+    setError(null);
+
+    if (options?.generateIdeasNow) {
+      await runIdeas(customTrend);
+      return;
+    }
+
+    setMessage(`Added "${customTrend.trendTitle}" as a custom trend.`);
+    setActiveStep(1);
   };
 
   const renderStepContent = () => {
@@ -547,7 +671,7 @@ export default function DashboardPage() {
                     {profile ? `${sourceMode === "curated" ? "Curated" : "Custom"} (${profile.sources.length} sources)` : "Loading..."}
                   </span>
                 </p>
-                <p>Uploaded media does not influence trends or ideas. It is only used when the pipeline reaches render.</p>
+                <p>Uploaded media can be linked into idea generation and stays available for render coverage at any point.</p>
                 <p>
                   {sourceMode === "curated"
                     ? "Curated feeds stay aligned to your selected niche."
@@ -583,11 +707,70 @@ export default function DashboardPage() {
       case 1:
         return (
           <section className="space-y-3">
-            <TrendPicker trends={trends} selectedIndex={selectedTrendIndex} onSelect={setSelectedTrendIndex} />
+            <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+              <CardContent className="space-y-3 p-3">
+                <div className="space-y-1">
+                  <Label htmlFor="trend-search" className="text-[var(--cp-ink)]">
+                    Search fetched trends or type a custom topic
+                  </Label>
+                  <p className="text-xs text-[var(--cp-muted)]">
+                    Use the search box to filter fetched trends below, or turn the typed topic into a custom trend and generate ideas immediately.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 md:flex-row">
+                  <Input
+                    id="trend-search"
+                    value={trendSearchQuery}
+                    onChange={(event) => setTrendSearchQuery(event.target.value)}
+                    placeholder="Example: Instagram SEO update"
+                    className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink)]"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        void applyTypedTrend();
+                      }}
+                      disabled={trendSearchQuery.trim().length === 0}
+                      className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
+                    >
+                      <SearchIcon className="mr-1 size-4" />
+                      Use typed trend
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        void applyTypedTrend({ generateIdeasNow: true });
+                      }}
+                      disabled={trendSearchQuery.trim().length === 0}
+                      className="text-white"
+                    >
+                      Generate ideas from typed trend
+                    </Button>
+                  </div>
+                </div>
+                {trendSearchQuery.trim().length > 0 && filteredTrendEntries.length === 0 ? (
+                  <p className="text-xs text-[var(--cp-muted-soft)]">
+                    No fetched trends match this search yet. You can still use the typed topic as a custom trend.
+                  </p>
+                ) : null}
+              </CardContent>
+            </Card>
+            <TrendPicker
+              trends={filteredTrendEntries.map((entry) => entry.trend)}
+              selectedIndex={filteredSelectedTrendIndex}
+              onSelect={(visibleIndex) => {
+                const next = filteredTrendEntries[visibleIndex];
+                if (next) {
+                  handleTrendSelect(next.index);
+                }
+              }}
+            />
             <Button
               type="button"
               onClick={() => setActiveStep(2)}
-              disabled={trends.length === 0}
+              disabled={!canContinueToIdeas}
               variant="outline"
               className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
             >
@@ -606,6 +789,27 @@ export default function DashboardPage() {
                 </CardContent>
               </Card>
             ) : null}
+            <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+              <CardContent className="flex items-start gap-3 p-3">
+                <Checkbox
+                  id="link-media-to-ideas"
+                  checked={linkUploadedMediaToIdeas}
+                  disabled={assets.length === 0}
+                  onCheckedChange={(checked) => setLinkUploadedMediaToIdeas(checked === true)}
+                  className="mt-0.5"
+                />
+                <div className="space-y-1">
+                  <Label htmlFor="link-media-to-ideas" className="text-[var(--cp-ink)]">
+                    Link uploaded media to ideas
+                  </Label>
+                  <p className="text-xs text-[var(--cp-muted)]">
+                    {assets.length > 0
+                      ? `Use ${assets.length} uploaded media asset${assets.length === 1 ? "" : "s"} as context so ideas stay grounded in visuals you already have.`
+                      : "Upload media from the top-right button to let idea generation use your existing screenshots and clips."}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
             <Button
               type="button"
               onClick={() => {
@@ -614,7 +818,7 @@ export default function DashboardPage() {
               disabled={!selectedTrend}
               className="text-white"
             >
-              Generate ideas
+              {linkUploadedMediaToIdeas && assets.length > 0 ? "Generate ideas with media context" : "Generate ideas"}
             </Button>
             <IdeaCards ideas={ideas} selectedIndex={selectedIdeaIndex} onSelect={setSelectedIdeaIndex} />
             <Button
@@ -624,41 +828,27 @@ export default function DashboardPage() {
               variant="outline"
               className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
             >
-              Continue to media
+              Continue to render
             </Button>
           </section>
         );
       case 3:
         return (
           <section className="space-y-3">
-            <UploadPanel
-              assets={assets}
-              onUploaded={(uploadedAssets) => {
-                setAssets((current) => [...uploadedAssets, ...current]);
-                setMessage(`Uploaded ${uploadedAssets.length} media assets.`);
-              }}
-            />
-            <Button
-              type="button"
-              onClick={() => setActiveStep(4)}
-              disabled={assets.length === 0 || !selectedIdea}
-              variant="outline"
-              className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
-            >
-              Continue to render
-            </Button>
-          </section>
-        );
-      case 4:
-        return (
-          <section className="space-y-3">
-            <RenderPanel idea={selectedIdea} assets={assets} onJobCreated={handleRenderJobCreated} />
+            {assets.length === 0 ? (
+              <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
+                <CardContent className="p-3 text-sm text-[var(--cp-muted)]">
+                  Upload media from the top-right button before rendering. Render analysis uses your current asset library and any generated support if coverage is weak.
+                </CardContent>
+              </Card>
+            ) : null}
+            <RenderPanel trend={selectedTrend} idea={selectedIdea} assets={assets} onJobCreated={handleRenderJobCreated} />
             {latestRenderJob?.status === "complete" ? (
               <p className="text-sm text-[var(--cp-success)]">Last render complete. You can proceed to metadata.</p>
             ) : null}
           </section>
         );
-      case 5:
+      case 4:
         return (
           <MetadataPanel
             trend={selectedTrend}
@@ -669,7 +859,7 @@ export default function DashboardPage() {
             onGenerate={generateMetadataAndSchedule}
           />
         );
-      case 6:
+      case 5:
         return (
           <YoutubePanel
             status={profile?.youtube ?? null}
@@ -684,6 +874,8 @@ export default function DashboardPage() {
             }
             schedule={schedule ? { publishAt: schedule.publishAt } : null}
             variants={renderVariantOptions}
+            audioStatus={latestRenderOutput?.audioStatus ?? null}
+            audioError={latestRenderOutput?.audioError ?? null}
             onConnect={connectYouTube}
             onUpload={startYoutubeUpload}
             isUploading={isYoutubeStarting}
@@ -702,11 +894,24 @@ export default function DashboardPage() {
           <div>
             <h1 className="text-2xl font-bold text-[var(--cp-ink)]">Creator Pilot Dashboard</h1>
             <p className="text-sm text-[var(--cp-muted-soft)]">
-              End-to-end pipeline: trends → ideas → media → render → metadata → schedule → YouTube upload.
+              End-to-end pipeline: trends → ideas → render → metadata → schedule → YouTube upload. Media upload stays available from the top right.
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <Button
+            type="button"
+            variant={isMediaPanelOpen ? "secondary" : "outline"}
+            onClick={() => setIsMediaPanelOpen((current) => !current)}
+            className={
+              isMediaPanelOpen
+                ? "bg-[var(--cp-highlight)] text-[var(--cp-deep)] hover:bg-[var(--cp-highlight)]/90"
+                : "border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
+            }
+          >
+            {isMediaPanelOpen ? <XIcon className="mr-1 size-4" /> : <UploadIcon className="mr-1 size-4" />}
+            {isMediaPanelOpen ? "Hide media" : `Upload media${assets.length > 0 ? ` (${assets.length})` : ""}`}
+          </Button>
           <Button
             type="button"
             onClick={runAutopilot}
@@ -728,6 +933,39 @@ export default function DashboardPage() {
           ) : null}
         </div>
       </header>
+
+      {isMediaPanelOpen ? (
+        <Card className="mb-4 border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 shadow-sm ring-0">
+          <CardContent className="p-4">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--cp-muted-dim)]">Media Library</h2>
+                <p className="mt-1 text-sm text-[var(--cp-muted)]">
+                  Upload media whenever you want. These assets can guide idea generation and will be available during render analysis.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsMediaPanelOpen(false)}
+                className="text-[var(--cp-muted)] hover:bg-[var(--cp-surface-soft)]"
+              >
+                Close
+              </Button>
+            </div>
+            <UploadPanel
+              assets={assets}
+              onUploaded={(uploadedAssets) => {
+                setAssets((current) => [...uploadedAssets, ...current]);
+                setMessage(
+                  `Uploaded ${uploadedAssets.length} media asset${uploadedAssets.length === 1 ? "" : "s"}. They are now available for idea generation and render.`,
+                );
+              }}
+            />
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-[260px_1fr]">
         <StepSidebar steps={STEPS} activeStep={activeStep} onSelect={setActiveStep} />

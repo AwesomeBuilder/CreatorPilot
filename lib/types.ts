@@ -43,6 +43,17 @@ export type ScheduleRecommendation = {
 
 export type RenderFormat = "shorts" | "landscape";
 export type RenderPreference = RenderFormat | "auto";
+export type MediaAssetType = "image" | "video";
+export type MediaSourceKind = "user" | "generated" | "synthetic";
+export type CoverageLevel = "strong" | "usable" | "weak" | "missing";
+export type BeatPurpose = "hook" | "context" | "proof" | "explanation" | "takeaway" | "cta";
+export type NormalizedCropWindow = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  label?: string;
+};
 
 export type MediaRelevanceStatus = "relevant" | "unclear" | "irrelevant";
 
@@ -52,16 +63,133 @@ export type MediaRelevanceAssessment = {
   summary: string;
   matchedSignals: string[];
   shouldBlock: boolean;
+  coverageScore?: number;
+  requiresGeneratedSupport?: boolean;
+};
+
+export type MediaAnalysisCandidate = {
+  candidateId: string;
+  assetId: string | null;
+  assetPath: string;
+  assetType: MediaAssetType | "generated";
+  source: MediaSourceKind;
+  analysisMode?: "multimodal" | "heuristic" | "generated-preview";
+  diagnosticMessage?: string;
+  label: string;
+  width?: number;
+  height?: number;
+  cropWindow?: NormalizedCropWindow;
+  durationSeconds?: number;
+  frameTimeSeconds?: number;
+  shotStartSeconds?: number;
+  shotEndSeconds?: number;
+  visualSummary: string;
+  compactSummary: string;
+  ocrText: string[];
+  uiText: string[];
+  logos: string[];
+  entities: string[];
+  topicCues: string[];
+  fitScore: number;
+  fitReason: string;
+  energyScore: number;
+  bestUseCases: BeatPurpose[];
+};
+
+export type StoryboardBeat = {
+  beatId: string;
+  order: number;
+  purpose: BeatPurpose;
+  title: string;
+  caption: string;
+  narration: string;
+  durationSeconds: number;
+  visualIntent: string;
+  coverageLevel: CoverageLevel;
+  matchScore: number;
+  selectedCandidateId: string | null;
+  selectedAssetId: string | null;
+  selectedAssetPath: string | null;
+  mediaSource: MediaSourceKind | "none";
+  assetType: MediaAssetType | "generated" | "none";
+  cropWindow?: NormalizedCropWindow;
+  shotStartSeconds?: number;
+  shotEndSeconds?: number;
+  matchReason: string;
+  analysisNote?: string;
+  missingCoverageNote?: string;
+  missingCoverageGuidance?: string[];
+  generatedVisualPrompt?: string;
+  generatedVisualStatus?: "planned" | "generated" | "unavailable" | "not-needed";
+  generatedPreviewPath?: string | null;
+  supportingVisuals?: StoryboardSupportingVisual[];
+};
+
+export type StoryboardSupportingVisual = {
+  visualId: string;
+  assetId: string | null;
+  assetPath: string | null;
+  assetType: MediaAssetType | "generated" | "none";
+  mediaSource: MediaSourceKind | "none";
+  label: string;
+  cropWindow?: NormalizedCropWindow;
+  shotStartSeconds?: number;
+  shotEndSeconds?: number;
+  generatedVisualPrompt?: string;
+  generatedVisualStatus?: "planned" | "generated" | "unavailable" | "not-needed";
+  generatedPreviewPath?: string | null;
+};
+
+export type StoryboardAssetSummary = {
+  assetId: string;
+  assetPath: string;
+  type: MediaAssetType;
+  compactSummary: string;
+  bestFitScore: number;
+  topCues: string[];
+  shotCount: number;
+  analysisMode?: "multimodal" | "heuristic";
+  diagnosticMessage?: string;
+};
+
+export type StoryboardDiagnostics = {
+  multimodalEnabled: boolean;
+  multimodalStatus: "enabled" | "disabled" | "partial" | "failed";
+  multimodalFailureReasons: string[];
+  fallbackAssetCount: number;
+  imageGenerationEnabled: boolean;
+  imageGenerationStatus: "enabled" | "disabled" | "partial" | "failed";
+  imageGenerationFailureReasons: string[];
+  generatedPreviewCount: number;
+};
+
+export type StoryboardPlan = {
+  format: RenderFormat;
+  coverageScore: number;
+  coverageSummary: string;
+  shouldBlock: boolean;
+  requiresMoreRelevantMedia: boolean;
+  generatedSupportEnabled: boolean;
+  generatedSupportUsed: boolean;
+  recommendedUploads?: string[];
+  diagnostics?: StoryboardDiagnostics;
+  assetSummaries: StoryboardAssetSummary[];
+  candidates: MediaAnalysisCandidate[];
+  beats: StoryboardBeat[];
 };
 
 export type RenderVariant = {
   variantIndex: number;
   path: string;
   duration: number;
+  hasAudio?: boolean;
 };
 
 export type RenderOutput = {
   format: RenderFormat;
   reason: string;
   variants: RenderVariant[];
+  audioStatus?: "generated" | "missing";
+  audioError?: string | null;
+  storyboard?: StoryboardPlan;
 };

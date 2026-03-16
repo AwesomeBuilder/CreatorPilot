@@ -2,14 +2,23 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
-import { assessMediaRelevance } from "@/lib/media-relevance";
 import { createJob, runJobInBackground } from "@/lib/jobs";
 import { renderVideoVariants } from "@/lib/render";
+import { buildStoryboardPlan, StoryboardPlanSchema, storyboardPlanToAssessment } from "@/lib/storyboard";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
 
+const TrendFitLabelSchema = z.enum(["Direct fit", "Adjacent angle", "Broad news", "Open feed"]);
+
 const InputSchema = z.object({
+  trend: z.object({
+    trendTitle: z.string().min(1),
+    summary: z.string().default(""),
+    links: z.array(z.string()).default([]),
+    fitLabel: TrendFitLabelSchema.optional(),
+    fitReason: z.string().optional(),
+  }),
   idea: z.object({
     videoTitle: z.string().min(1),
     hook: z.string().min(1),
@@ -19,6 +28,7 @@ const InputSchema = z.object({
   mediaAssetIds: z.array(z.string().min(1)).min(1),
   preference: z.enum(["auto", "shorts", "landscape"]).default("auto"),
   allowIrrelevantMedia: z.boolean().default(false),
+  storyboard: StoryboardPlanSchema.optional(),
 });
 
 export async function POST(req: Request) {
@@ -44,22 +54,39 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No valid media assets found for rendering." }, { status: 400 });
   }
 
-  const assessment = await assessMediaRelevance({
-    idea: parsed.data.idea,
-    assets: assets.map((asset) => ({
-      path: asset.path,
-      type: asset.type,
-    })),
-  });
+  const storyboard =
+    parsed.data.storyboard ??
+    (await buildStoryboardPlan({
+      trend: parsed.data.trend,
+      idea: parsed.data.idea,
+      assets: assets.map((asset) => ({
+        id: asset.id,
+        path: asset.path,
+        type: asset.type as "image" | "video",
+      })),
+      preference: parsed.data.preference,
+    }));
 
-  if (assessment.shouldBlock && !parsed.data.allowIrrelevantMedia) {
+  const assessment = storyboardPlanToAssessment(storyboard);
+
+  if (storyboard.shouldBlock && !parsed.data.allowIrrelevantMedia) {
     return NextResponse.json(
       {
-        error: assessment.summary,
+        error: storyboard.coverageSummary,
         assessment,
+        storyboard,
       },
       { status: 400 },
     );
+  }
+
+  const selectedAssetIds = new Set(assets.map((asset) => asset.id));
+  const userBeatAssetIds = storyboard.beats
+    .map((beat) => beat.selectedAssetId)
+    .filter((assetId): assetId is string => typeof assetId === "string" && assetId.length > 0);
+
+  if (userBeatAssetIds.some((assetId) => !selectedAssetIds.has(assetId))) {
+    return NextResponse.json({ error: "Storyboard references media that is not part of the selected assets." }, { status: 400 });
   }
 
   const job = await createJob({
@@ -69,22 +96,21 @@ export async function POST(req: Request) {
   });
 
   runJobInBackground(job.id, async ({ log }) => {
-    await log("Resolving media assets.");
-
-    await log(`Rendering using ${assets.length} selected assets.`);
+    await log("Resolving storyboard coverage.");
+    await log(`Rendering ${storyboard.beats.length} storyboard beats.`);
+    if (storyboard.generatedSupportUsed) {
+      await log("Some beats will use generated supporting visuals.");
+    }
 
     const output = await renderVideoVariants({
       userId: user.id,
       jobId: job.id,
-      mediaPaths: assets.map((asset) => asset.path),
       title: parsed.data.idea.videoTitle,
-      hook: parsed.data.idea.hook,
-      bulletOutline: parsed.data.idea.bulletOutline,
-      cta: parsed.data.idea.cta,
-      preference: parsed.data.preference,
+      storyboard,
     });
 
     await log(`Render format chosen: ${output.format}.`);
+    await log(output.audioStatus === "generated" ? "Generated narration/audio track for the render." : `Render completed without narration/audio. ${output.audioError ?? ""}`.trim());
 
     await prisma.$transaction(
       output.variants.map((variant) =>
@@ -100,7 +126,7 @@ export async function POST(req: Request) {
       ),
     );
 
-    await log("Generated 3 render variants.");
+    await log(`Generated ${output.variants.length} render variants.`);
 
     return output;
   });

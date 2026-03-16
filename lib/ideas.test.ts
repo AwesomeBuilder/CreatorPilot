@@ -6,7 +6,12 @@ const llmMock = vi.hoisted(() => ({
   llmChatJSON: vi.fn(),
 }));
 
+const storyboardMock = vi.hoisted(() => ({
+  buildStoryboardPlan: vi.fn(),
+}));
+
 vi.mock("@/lib/llm", () => llmMock);
+vi.mock("@/lib/storyboard", () => storyboardMock);
 
 import { generateIdeas } from "@/lib/ideas";
 
@@ -28,6 +33,7 @@ function buildIdea(index: number, bulletCount = 3): Idea {
 describe("generateIdeas", () => {
   beforeEach(() => {
     llmMock.llmChatJSON.mockReset();
+    storyboardMock.buildStoryboardPlan.mockReset();
   });
 
   it("falls back to bridge-style ideas when the LLM is unavailable", async () => {
@@ -46,6 +52,27 @@ describe("generateIdeas", () => {
     expect(ideas[0]?.videoTitle).toContain("AI & Tech");
     expect(ideas[0]?.hook).toContain("AI & Tech");
     expect(ideas[2]?.hook).toContain("analytical");
+  });
+
+  it("links uploaded media context into fallback ideas when assets are provided", async () => {
+    llmMock.llmChatJSON.mockResolvedValue(null);
+    storyboardMock.buildStoryboardPlan.mockRejectedValue(new Error("analysis unavailable"));
+
+    const ideas = await generateIdeas({
+      trend: baseTrend,
+      niche: "AI & Tech",
+      tone: "analytical",
+      mediaAssets: [
+        {
+          id: "asset-1",
+          path: "/tmp/creator-dashboard-demo.mp4",
+          type: "video",
+        },
+      ],
+    });
+
+    expect(ideas[0]?.hook).toContain("uploaded media");
+    expect(ideas[0]?.bulletOutline.some((bullet) => bullet.includes("creator-dashboard-demo.mp4"))).toBe(true);
   });
 
   it("falls back when the LLM returns too few ideas", async () => {
@@ -77,5 +104,143 @@ describe("generateIdeas", () => {
     expect(ideas).toHaveLength(3);
     expect(ideas[0]?.bulletOutline).toHaveLength(5);
     expect(ideas[2]?.videoTitle).toBe("Idea 3");
+  });
+
+  it("passes analyzed media context into the LLM when uploads are linked", async () => {
+    storyboardMock.buildStoryboardPlan.mockResolvedValue({
+      format: "shorts",
+      coverageScore: 74,
+      coverageSummary: "Coverage is usable with the uploaded media.",
+      shouldBlock: false,
+      requiresMoreRelevantMedia: false,
+      generatedSupportEnabled: true,
+      generatedSupportUsed: false,
+      recommendedUploads: ["Add one proof screenshot."],
+      diagnostics: {
+        multimodalEnabled: true,
+        multimodalStatus: "enabled",
+        multimodalFailureReasons: [],
+        fallbackAssetCount: 0,
+        imageGenerationEnabled: true,
+        imageGenerationStatus: "enabled",
+        imageGenerationFailureReasons: [],
+        generatedPreviewCount: 0,
+      },
+      assetSummaries: [
+        {
+          assetId: "asset-1",
+          assetPath: "/tmp/workflow-ui.png",
+          type: "image",
+          compactSummary: "Workflow UI screenshot.",
+          bestFitScore: 81,
+          topCues: ["workflow", "editor"],
+          shotCount: 1,
+          analysisMode: "multimodal",
+        },
+      ],
+      candidates: [],
+      beats: [
+        {
+          beatId: "beat-1",
+          order: 1,
+          purpose: "hook",
+          title: "Hook",
+          caption: "Hook",
+          narration: "Hook",
+          durationSeconds: 3.2,
+          visualIntent: "A strong opening visual.",
+          coverageLevel: "strong",
+          matchScore: 80,
+          selectedCandidateId: null,
+          selectedAssetId: null,
+          selectedAssetPath: null,
+          mediaSource: "none",
+          assetType: "none",
+          matchReason: "Coverage analysis pending.",
+          generatedVisualStatus: "not-needed",
+        },
+        {
+          beatId: "beat-2",
+          order: 2,
+          purpose: "context",
+          title: "Context",
+          caption: "Context",
+          narration: "Context",
+          durationSeconds: 3.2,
+          visualIntent: "Context visual.",
+          coverageLevel: "usable",
+          matchScore: 70,
+          selectedCandidateId: null,
+          selectedAssetId: null,
+          selectedAssetPath: null,
+          mediaSource: "none",
+          assetType: "none",
+          matchReason: "Coverage analysis pending.",
+          generatedVisualStatus: "not-needed",
+        },
+        {
+          beatId: "beat-3",
+          order: 3,
+          purpose: "proof",
+          title: "Proof",
+          caption: "Proof",
+          narration: "Proof",
+          durationSeconds: 3.2,
+          visualIntent: "Proof visual.",
+          coverageLevel: "usable",
+          matchScore: 70,
+          selectedCandidateId: null,
+          selectedAssetId: null,
+          selectedAssetPath: null,
+          mediaSource: "none",
+          assetType: "none",
+          matchReason: "Coverage analysis pending.",
+          generatedVisualStatus: "not-needed",
+        },
+        {
+          beatId: "beat-4",
+          order: 4,
+          purpose: "cta",
+          title: "CTA",
+          caption: "CTA",
+          narration: "CTA",
+          durationSeconds: 2.4,
+          visualIntent: "CTA visual.",
+          coverageLevel: "usable",
+          matchScore: 70,
+          selectedCandidateId: null,
+          selectedAssetId: null,
+          selectedAssetPath: null,
+          mediaSource: "none",
+          assetType: "none",
+          matchReason: "Coverage analysis pending.",
+          generatedVisualStatus: "not-needed",
+        },
+      ],
+    });
+    llmMock.llmChatJSON.mockResolvedValue({
+      ideas: [buildIdea(1), buildIdea(2), buildIdea(3)],
+    });
+
+    await generateIdeas({
+      trend: baseTrend,
+      niche: "AI & Tech",
+      tone: "clear",
+      mediaAssets: [
+        {
+          id: "asset-1",
+          path: "/tmp/workflow-ui.png",
+          type: "image",
+        },
+      ],
+    });
+
+    expect(storyboardMock.buildStoryboardPlan).toHaveBeenCalledTimes(1);
+    expect(llmMock.llmChatJSON).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user: expect.stringContaining('"mediaContext"'),
+      }),
+    );
+    expect(llmMock.llmChatJSON.mock.calls[0]?.[0]?.user).toContain("Workflow UI screenshot.");
   });
 });

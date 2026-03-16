@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { prisma } from "@/lib/db";
 import { createJob, runJobInBackground } from "@/lib/jobs";
 import { generateIdeas } from "@/lib/ideas";
 import { resolveUser } from "@/lib/user";
@@ -15,6 +16,7 @@ const InputSchema = z.object({
     fitLabel: z.enum(["Direct fit", "Adjacent angle", "Broad news", "Open feed"]).optional(),
     fitReason: z.string().optional(),
   }),
+  mediaAssetIds: z.array(z.string().min(1)).default([]),
 });
 
 export async function POST(req: Request) {
@@ -34,14 +36,36 @@ export async function POST(req: Request) {
 
   runJobInBackground(job.id, async ({ log }) => {
     await log("Generating three ideas from selected trend.");
+    const linkedAssets =
+      parsed.data.mediaAssetIds.length > 0
+        ? await prisma.mediaAsset.findMany({
+            where: {
+              userId: user.id,
+              id: {
+                in: parsed.data.mediaAssetIds,
+              },
+            },
+            orderBy: { createdAt: "asc" },
+          })
+        : [];
+
+    if (linkedAssets.length > 0) {
+      await log(`Linked ${linkedAssets.length} uploaded media asset${linkedAssets.length === 1 ? "" : "s"} into idea generation.`);
+    }
+
     const ideas = await generateIdeas({
       trend: parsed.data.trend,
       niche: user.niche,
       tone: user.tone,
+      mediaAssets: linkedAssets.map((asset) => ({
+        id: asset.id,
+        path: asset.path,
+        type: asset.type as "image" | "video",
+      })),
     });
 
     await log("Ideas generated successfully.");
-    return { ideas };
+    return { ideas, linkedMediaCount: linkedAssets.length };
   });
 
   return NextResponse.json({ jobId: job.id, status: job.status });

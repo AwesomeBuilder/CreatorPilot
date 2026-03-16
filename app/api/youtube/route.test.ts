@@ -12,6 +12,7 @@ const routeMocks = vi.hoisted(() => ({
   getYoutubeAuthUrl: vi.fn(),
   getYoutubeConnectionStatus: vi.fn(),
   uploadVideoToYoutube: vi.fn(),
+  probeMedia: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -33,6 +34,10 @@ vi.mock("@/lib/youtube", () => ({
   uploadVideoToYoutube: routeMocks.uploadVideoToYoutube,
 }));
 
+vi.mock("@/lib/ffmpeg", () => ({
+  probeMedia: routeMocks.probeMedia,
+}));
+
 import { GET, POST } from "@/app/api/youtube/route";
 
 describe("/api/youtube", () => {
@@ -44,6 +49,7 @@ describe("/api/youtube", () => {
     routeMocks.getYoutubeAuthUrl.mockReset();
     routeMocks.getYoutubeConnectionStatus.mockReset();
     routeMocks.uploadVideoToYoutube.mockReset();
+    routeMocks.probeMedia.mockReset();
   });
 
   it("returns connection details and auth URL metadata", async () => {
@@ -87,6 +93,7 @@ describe("/api/youtube", () => {
       mode: "mock",
       url: "https://youtube.example.com/watch?v=123",
     });
+    routeMocks.probeMedia.mockResolvedValue({ hasAudio: true });
 
     let backgroundTask:
       | ((helpers: { log: (message: string) => Promise<void> }) => Promise<unknown>)

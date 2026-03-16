@@ -13,7 +13,7 @@ type TrendPickerProps = {
 
 export function TrendPicker({ trends, selectedIndex, onSelect }: TrendPickerProps) {
   if (trends.length === 0) {
-    return <p className="text-sm text-[var(--cp-muted-soft)]">No trends yet. Run Fetch trends first.</p>;
+    return <p className="text-sm text-[var(--cp-muted-soft)]">No fetched trends match yet. Fetch trends or use the typed topic as a custom trend.</p>;
   }
 
   return (

@@ -82,7 +82,7 @@ export function UploadPanel({ assets, onUploaded }: UploadPanelProps) {
               : "No files selected yet. Select files to enable upload."}
           </p>
           <p className="mt-2 text-xs text-[var(--cp-muted-dim)]">
-            Uploaded media is only used during the render step. It does not change trend selection or idea generation.
+            Uploaded media can be linked into idea generation and is always available during render analysis.
           </p>
           <Button type="button" onClick={handleUpload} disabled={isUploading || !files || files.length === 0} className="mt-3 text-white">
             {isUploading ? "Uploading..." : "Upload media"}
@@ -96,13 +96,17 @@ export function UploadPanel({ assets, onUploaded }: UploadPanelProps) {
 
       <div>
         <h3 className="mb-2 text-sm font-semibold text-[var(--cp-ink)]">Available assets ({assets.length})</h3>
-        <ul className="space-y-1 text-xs text-[var(--cp-muted)]">
-          {assets.map((asset) => (
-            <li key={asset.id} className="rounded border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-2 py-1">
-              {asset.type.toUpperCase()} - {asset.path}
-            </li>
-          ))}
-        </ul>
+        {assets.length > 0 ? (
+          <ul className="space-y-1 text-xs text-[var(--cp-muted)]">
+            {assets.map((asset) => (
+              <li key={asset.id} className="rounded border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-2 py-1">
+                {asset.type.toUpperCase()} - {asset.path.split("/").at(-1) ?? asset.path}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-[var(--cp-muted-soft)]">No uploaded assets yet.</p>
+        )}
       </div>
     </div>
   );

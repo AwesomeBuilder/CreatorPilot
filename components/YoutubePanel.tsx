@@ -19,6 +19,7 @@ type RenderVariantOption = {
   label: string;
   path: string;
   previewUrl: string;
+  hasAudio?: boolean;
 };
 
 type MetadataInput = {
@@ -36,6 +37,8 @@ type YoutubePanelProps = {
   metadata: MetadataInput | null;
   schedule: ScheduleInput | null;
   variants: RenderVariantOption[];
+  audioStatus: "generated" | "missing" | null;
+  audioError: string | null;
   onConnect: () => void;
   onUpload: (payload: { renderId: string; publishAt?: string }) => void;
   isUploading: boolean;
@@ -46,6 +49,8 @@ export function YoutubePanel({
   metadata,
   schedule,
   variants,
+  audioStatus,
+  audioError,
   onConnect,
   onUpload,
   isUploading,
@@ -57,12 +62,12 @@ export function YoutubePanel({
   const effectiveRenderId = variants.some((variant) => variant.id === selectedRenderId)
     ? selectedRenderId
     : defaultVariant;
+  const selectedVariant = variants.find((variant) => variant.id === effectiveRenderId) ?? null;
 
   const canUpload = useMemo(
-    () => Boolean(metadata && effectiveRenderId && variants.length > 0),
-    [metadata, effectiveRenderId, variants.length],
+    () => Boolean(metadata && effectiveRenderId && variants.length > 0 && selectedVariant?.hasAudio !== false),
+    [metadata, effectiveRenderId, selectedVariant?.hasAudio, variants.length],
   );
-  const selectedVariant = variants.find((variant) => variant.id === effectiveRenderId) ?? null;
 
   return (
     <div className="space-y-4">
@@ -137,7 +142,17 @@ export function YoutubePanel({
                 className="w-full rounded-lg border border-[var(--cp-border)] bg-black"
                 src={selectedVariant.previewUrl}
               />
+              <p className={`text-[11px] ${selectedVariant.hasAudio === false ? "text-[var(--cp-error)]" : "text-[var(--cp-muted)]"}`}>
+                Audio: {selectedVariant.hasAudio === false ? "missing" : audioStatus === "generated" ? "generated narration included" : "available or unknown"}
+              </p>
             </div>
+          ) : null}
+
+          {audioStatus === "missing" || selectedVariant?.hasAudio === false ? (
+            <p className="mt-2 text-xs text-[var(--cp-error)]">
+              This render cannot be uploaded to YouTube until narration/audio is present.
+              {audioError ? ` ${audioError}` : ""}
+            </p>
           ) : null}
 
           <Button

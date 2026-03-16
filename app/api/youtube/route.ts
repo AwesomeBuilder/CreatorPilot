@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
+import { probeMedia } from "@/lib/ffmpeg";
 import { createJob, runJobInBackground } from "@/lib/jobs";
 import { resolveUser } from "@/lib/user";
 import { getYoutubeAuthUrl, getYoutubeConnectionStatus, uploadVideoToYoutube } from "@/lib/youtube";
@@ -61,6 +62,14 @@ export async function POST(req: Request) {
 
   if (!resolvedPath) {
     return NextResponse.json({ error: "No render file was provided." }, { status: 400 });
+  }
+
+  const renderProbe = await probeMedia(resolvedPath);
+  if (!renderProbe.hasAudio) {
+    return NextResponse.json(
+      { error: "This render has no audio track. Generate narration/audio before uploading to YouTube." },
+      { status: 400 },
+    );
   }
 
   const job = await createJob({
