@@ -276,7 +276,7 @@ export function RenderPanel({
 
   return (
     <div className="min-w-0 space-y-4">
-      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="min-w-0 space-y-4">
           <Card className="border-[var(--cp-border)] py-0 ring-0">
             <CardContent className="space-y-4 p-4">
@@ -305,7 +305,7 @@ export function RenderPanel({
                 <p className="mb-2 text-[11px] text-[var(--cp-muted-dim)]">
                   {selectionDescription ?? "Pick which uploaded assets should be used for coverage analysis and rendering."}
                 </p>
-                <div className="grid gap-2">
+                <div className="grid max-h-[min(46vh,26rem)] gap-2 overflow-y-auto pr-1">
                   {assets.map((asset) => {
                     const checked = effectiveSelected.includes(asset.id);
                     const inputId = `asset-${asset.id}`;

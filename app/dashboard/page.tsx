@@ -1500,7 +1500,7 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
         <StepSidebar steps={steps} activeStep={activeStep} onSelect={setActiveStep} />
 
         <Card className="min-w-0 border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 shadow-sm ring-0">

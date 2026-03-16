@@ -11,7 +11,7 @@ type StepSidebarProps = {
 
 export function StepSidebar({ steps, activeStep, onSelect }: StepSidebarProps) {
   return (
-    <Card className="border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 shadow-sm ring-0">
+    <Card className="self-start border-[var(--cp-border)] bg-[var(--cp-surface)] py-0 shadow-sm ring-0">
       <CardContent className="p-4">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[var(--cp-muted-dim)]">Workflow</h2>
         <ol className="space-y-2">
