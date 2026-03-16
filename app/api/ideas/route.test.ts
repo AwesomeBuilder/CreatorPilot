@@ -217,9 +217,18 @@ describe("POST /api/ideas", () => {
     expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
       where: {
         userId: "user-1",
-        id: {
-          in: ["asset-1"],
-        },
+        OR: [
+          {
+            id: {
+              in: ["asset-1"],
+            },
+          },
+          {
+            path: {
+              in: ["asset-1"],
+            },
+          },
+        ],
       },
       orderBy: { createdAt: "asc" },
     });
@@ -440,5 +449,98 @@ describe("POST /api/ideas", () => {
       linkedMediaCount: 1,
       workflow: "media-led",
     });
+  });
+
+  it("resolves linked media by stored path for backward compatibility", async () => {
+    const assetPath = "/app/uploads/user-1/manual-123/workflow-ui.png";
+    routeMocks.createJob.mockResolvedValue({ id: "job-5", status: "queued" });
+    routeMocks.resolveUser.mockResolvedValue({
+      id: "user-1",
+      niche: "Creator Economy",
+      tone: "direct",
+    });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([
+      {
+        id: "asset-1",
+        path: assetPath,
+        type: "image",
+      },
+    ]);
+
+    let backgroundTask:
+      | ((helpers: { log: (message: string) => Promise<void> }) => Promise<unknown>)
+      | undefined;
+
+    routeMocks.runJobInBackground.mockImplementation((_: string, task: typeof backgroundTask) => {
+      backgroundTask = task;
+    });
+
+    routeMocks.generateIdeas.mockResolvedValue({
+      ideas: [
+        {
+          videoTitle: "One focused plan",
+          hook: "Explain the dashboard flow.",
+          bulletOutline: ["Hook", "Walkthrough", "CTA"],
+          cta: "Comment for the next breakdown.",
+        },
+      ],
+      generationMode: "single-plan",
+      contextAssessment: {
+        summary: "The upload already implies a clear walkthrough.",
+        confidence: 84,
+        requiresBrief: false,
+        missingContextPrompts: [],
+      },
+      derivedContextTrend: {
+        trendTitle: "Workflow explainer",
+        summary: "Creator dashboard walkthrough.",
+        links: [],
+        fitLabel: "Open feed",
+        fitReason: "Derived from uploaded creator media and optional text context.",
+      },
+    });
+
+    await POST(
+      new Request("http://localhost/api/ideas", {
+        method: "POST",
+        body: JSON.stringify({
+          workflow: "media-led",
+          mediaAssetIds: [assetPath],
+        }),
+      }),
+    );
+
+    const log = vi.fn().mockResolvedValue(undefined);
+    await backgroundTask?.({ log });
+
+    expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
+      where: {
+        userId: "user-1",
+        OR: [
+          {
+            id: {
+              in: [assetPath],
+            },
+          },
+          {
+            path: {
+              in: [assetPath],
+            },
+          },
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(routeMocks.generateIdeas).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mediaAssets: [
+          {
+            id: "asset-1",
+            path: assetPath,
+            type: "image",
+          },
+        ],
+      }),
+    );
   });
 });

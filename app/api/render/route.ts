@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { prisma } from "@/lib/db";
 import { appendJobLog, createJob, runJobInBackground } from "@/lib/jobs";
+import { resolveRequestedMediaAssets } from "@/lib/media-assets";
 import { renderVideoVariants } from "@/lib/render";
 import { buildStoryboardPlan, StoryboardPlanSchema, storyboardPlanToAssessment } from "@/lib/storyboard";
 import { resolveUser } from "@/lib/user";
@@ -81,14 +82,9 @@ export async function POST(req: Request) {
 
   const user = await resolveUser(req);
 
-  const assets = await prisma.mediaAsset.findMany({
-    where: {
-      userId: user.id,
-      id: {
-        in: parsed.data.mediaAssetIds,
-      },
-    },
-    orderBy: { createdAt: "asc" },
+  const assets = await resolveRequestedMediaAssets({
+    userId: user.id,
+    mediaReferences: parsed.data.mediaAssetIds,
   });
 
   if (assets.length === 0) {

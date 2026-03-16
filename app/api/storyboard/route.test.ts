@@ -67,6 +67,24 @@ describe("POST /api/storyboard", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "No valid media assets found for storyboarding." });
+    expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
+      where: {
+        userId: "user-1",
+        OR: [
+          {
+            id: {
+              in: ["asset-1"],
+            },
+          },
+          {
+            path: {
+              in: ["asset-1"],
+            },
+          },
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
   });
 
   it("returns storyboard coverage plus the derived assessment", async () => {
@@ -229,5 +247,155 @@ describe("POST /api/storyboard", () => {
       scopeId: expect.stringMatching(/^storyboard-/),
       storyboard,
     });
+  });
+
+  it("resolves uploaded media when the request sends stored asset paths", async () => {
+    const assetPath = "/app/uploads/user-1/manual-123/workflow.png";
+    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: assetPath, type: "image" }]);
+    routeMocks.buildStoryboardPlan.mockResolvedValue({
+      format: "shorts",
+      coverageScore: 76,
+      coverageSummary: "Coverage is strong enough to render directly from the uploaded media.",
+      shouldBlock: false,
+      requiresMoreRelevantMedia: false,
+      generatedSupportEnabled: true,
+      generatedSupportUsed: false,
+      assetSummaries: [],
+      candidates: [],
+      beats: [
+        {
+          beatId: "beat-1",
+          order: 1,
+          purpose: "hook",
+          title: "Idea",
+          caption: "Hook",
+          narration: "Hook",
+          durationSeconds: 3.2,
+          visualIntent: "Strong opening visual.",
+          coverageLevel: "strong",
+          matchScore: 82,
+          selectedCandidateId: "asset-1",
+          selectedAssetId: "asset-1",
+          selectedAssetPath: assetPath,
+          mediaSource: "user",
+          assetType: "image",
+          matchReason: "The screenshot directly matches the hook.",
+          generatedVisualStatus: "not-needed",
+        },
+        {
+          beatId: "beat-2",
+          order: 2,
+          purpose: "context",
+          title: "Context",
+          caption: "Context",
+          narration: "Context",
+          durationSeconds: 3,
+          visualIntent: "Context visual.",
+          coverageLevel: "usable",
+          matchScore: 70,
+          selectedCandidateId: "asset-1",
+          selectedAssetId: "asset-1",
+          selectedAssetPath: assetPath,
+          mediaSource: "user",
+          assetType: "image",
+          matchReason: "Same screenshot supports the context beat.",
+          generatedVisualStatus: "not-needed",
+        },
+        {
+          beatId: "beat-3",
+          order: 3,
+          purpose: "proof",
+          title: "Proof",
+          caption: "Proof",
+          narration: "Proof",
+          durationSeconds: 3,
+          visualIntent: "Proof visual.",
+          coverageLevel: "usable",
+          matchScore: 68,
+          selectedCandidateId: "asset-1",
+          selectedAssetId: "asset-1",
+          selectedAssetPath: assetPath,
+          mediaSource: "user",
+          assetType: "image",
+          matchReason: "Same screenshot supports the proof.",
+          generatedVisualStatus: "not-needed",
+        },
+        {
+          beatId: "beat-4",
+          order: 4,
+          purpose: "cta",
+          title: "Close strong",
+          caption: "CTA",
+          narration: "CTA",
+          durationSeconds: 2.2,
+          visualIntent: "Clean close.",
+          coverageLevel: "usable",
+          matchScore: 60,
+          selectedCandidateId: null,
+          selectedAssetId: null,
+          selectedAssetPath: null,
+          mediaSource: "synthetic",
+          assetType: "none",
+          matchReason: "A fallback card closes more cleanly.",
+          generatedVisualStatus: "not-needed",
+        },
+      ],
+    });
+    routeMocks.hydrateStoryboardGeneratedPreviews.mockImplementation(async ({ storyboard }) => storyboard);
+    routeMocks.storyboardPlanToAssessment.mockReturnValue({
+      status: "relevant",
+      confidence: 0.76,
+      summary: "Coverage is strong enough to render directly from the uploaded media.",
+      matchedSignals: ["workflow"],
+      shouldBlock: false,
+      coverageScore: 76,
+      requiresGeneratedSupport: false,
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/storyboard", {
+        method: "POST",
+        body: JSON.stringify({
+          trend: {
+            trendTitle: "OpenAI update",
+            summary: "Summary",
+            links: [],
+          },
+          idea: {
+            videoTitle: "Idea",
+            hook: "Hook",
+            bulletOutline: [],
+            cta: "CTA",
+          },
+          mediaAssetIds: [assetPath],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
+      where: {
+        userId: "user-1",
+        OR: [
+          {
+            id: {
+              in: [assetPath],
+            },
+          },
+          {
+            path: {
+              in: [assetPath],
+            },
+          },
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(routeMocks.buildStoryboardPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assets: [{ id: "asset-1", path: assetPath, type: "image" }],
+      }),
+    );
   });
 });

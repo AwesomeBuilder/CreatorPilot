@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { prisma } from "@/lib/db";
+import { resolveRequestedMediaAssets } from "@/lib/media-assets";
 import { buildStoryboardPlan, hydrateStoryboardGeneratedPreviews, storyboardPlanToAssessment } from "@/lib/storyboard";
 import { resolveUser } from "@/lib/user";
 
@@ -36,14 +36,9 @@ export async function POST(req: Request) {
 
   const user = await resolveUser(req);
 
-  const assets = await prisma.mediaAsset.findMany({
-    where: {
-      userId: user.id,
-      id: {
-        in: parsed.data.mediaAssetIds,
-      },
-    },
-    orderBy: { createdAt: "asc" },
+  const assets = await resolveRequestedMediaAssets({
+    userId: user.id,
+    mediaReferences: parsed.data.mediaAssetIds,
   });
 
   if (assets.length === 0) {

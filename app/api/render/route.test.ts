@@ -367,9 +367,18 @@ describe("POST /api/render", () => {
     expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
       where: {
         userId: "user-1",
-        id: {
-          in: ["asset-1", "asset-2"],
-        },
+        OR: [
+          {
+            id: {
+              in: ["asset-1", "asset-2"],
+            },
+          },
+          {
+            path: {
+              in: ["asset-1", "asset-2"],
+            },
+          },
+        ],
       },
       orderBy: { createdAt: "asc" },
     });
@@ -490,5 +499,125 @@ describe("POST /api/render", () => {
         ),
       }),
     });
+  });
+
+  it("resolves render assets when the request sends stored media paths", async () => {
+    const assetPath = "/app/uploads/user-1/manual-123/input-a.mp4";
+    const storyboard = makeStoryboard({
+      assetSummaries: [
+        {
+          assetId: "asset-1",
+          assetPath,
+          type: "video",
+          compactSummary: "Shows the product workflow.",
+          bestFitScore: 84,
+          topCues: ["workflow", "editor", "creator"],
+          shotCount: 3,
+        },
+      ],
+      candidates: [
+        {
+          candidateId: "asset-1:shot-1",
+          assetId: "asset-1",
+          assetPath,
+          assetType: "video",
+          source: "user",
+          label: "input-a.mp4 @ 0:03",
+          durationSeconds: 12,
+          frameTimeSeconds: 3,
+          shotStartSeconds: 1.8,
+          shotEndSeconds: 4.8,
+          visualSummary: "Editor UI showing the workflow.",
+          compactSummary: "Workflow UI.",
+          ocrText: ["Storyboard", "Render"],
+          uiText: ["Editor"],
+          logos: ["OpenAI"],
+          entities: ["Creator Pilot"],
+          topicCues: ["workflow", "creator"],
+          fitScore: 82,
+          fitReason: "The frame directly shows the workflow being discussed.",
+          energyScore: 68,
+          bestUseCases: ["hook", "proof"],
+        },
+      ],
+      beats: makeStoryboard().beats.map((beat) => ({
+        ...beat,
+        selectedAssetPath: beat.selectedAssetPath ? assetPath : null,
+      })),
+    });
+
+    routeMocks.createJob.mockResolvedValue({ id: "job-2", status: "queued" });
+    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: assetPath, type: "video" }]);
+    routeMocks.storyboardPlanToAssessment.mockReturnValue({
+      status: "relevant",
+      confidence: 0.82,
+      summary: storyboard.coverageSummary,
+      matchedSignals: ["workflow", "creator"],
+      shouldBlock: false,
+      coverageScore: 78,
+      requiresGeneratedSupport: false,
+    });
+    routeMocks.renderVideoVariants.mockResolvedValue({
+      format: "shorts",
+      reason: storyboard.coverageSummary,
+      storyboard,
+      variants: [{ variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 }],
+    });
+
+    let backgroundTask:
+      | ((helpers: { log: (message: string) => Promise<void> }) => Promise<unknown>)
+      | undefined;
+
+    routeMocks.runJobInBackground.mockImplementation((_: string, task: typeof backgroundTask) => {
+      backgroundTask = task;
+    });
+
+    await POST(
+      new Request("http://localhost/api/render", {
+        method: "POST",
+        body: JSON.stringify({
+          trend,
+          idea,
+          mediaAssetIds: [assetPath],
+          preference: "shorts",
+          storyboard,
+        }),
+      }),
+    );
+
+    const log = vi.fn().mockResolvedValue(undefined);
+    await backgroundTask?.({ log });
+
+    expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
+      where: {
+        userId: "user-1",
+        OR: [
+          {
+            id: {
+              in: [assetPath],
+            },
+          },
+          {
+            path: {
+              in: [assetPath],
+            },
+          },
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(routeMocks.renderVideoVariants).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storyboard: expect.objectContaining({
+          beats: expect.arrayContaining([
+            expect.objectContaining({
+              selectedAssetId: "asset-1",
+              selectedAssetPath: assetPath,
+            }),
+          ]),
+        }),
+      }),
+    );
   });
 });

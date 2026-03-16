@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { prisma } from "@/lib/db";
 import { createJob, runJobInBackground } from "@/lib/jobs";
 import { generateIdeas } from "@/lib/ideas";
+import { resolveRequestedMediaAssets } from "@/lib/media-assets";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
@@ -62,14 +62,9 @@ export async function POST(req: Request) {
   runJobInBackground(job.id, async ({ log }) => {
     const linkedAssets =
       parsed.data.mediaAssetIds.length > 0
-        ? await prisma.mediaAsset.findMany({
-            where: {
-              userId: user.id,
-              id: {
-                in: parsed.data.mediaAssetIds,
-              },
-            },
-            orderBy: { createdAt: "asc" },
+        ? await resolveRequestedMediaAssets({
+            userId: user.id,
+            mediaReferences: parsed.data.mediaAssetIds,
           })
         : [];
 
