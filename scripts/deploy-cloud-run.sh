@@ -3,6 +3,17 @@ set -eu
 
 export CLOUDSDK_CORE_DISABLE_FILE_LOGGING="${CLOUDSDK_CORE_DISABLE_FILE_LOGGING:-1}"
 
+is_local_url() {
+  case "${1:-}" in
+    http://localhost* | https://localhost* | http://127.0.0.1* | https://127.0.0.1*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 required_vars="GOOGLE_CLOUD_PROJECT CLOUD_RUN_REGION CLOUD_RUN_SERVICE LLM_API_KEY"
 
 for var_name in $required_vars; do
@@ -26,6 +37,16 @@ fi
 
 tmp_env_file="$(mktemp)"
 trap 'rm -f "$tmp_env_file"' EXIT
+
+deploy_app_base_url="${APP_BASE_URL:-}"
+if is_local_url "$deploy_app_base_url"; then
+  deploy_app_base_url=""
+fi
+
+deploy_redirect_uri="${GOOGLE_REDIRECT_URI:-}"
+if is_local_url "$deploy_redirect_uri"; then
+  deploy_redirect_uri=""
+fi
 
 cat > "$tmp_env_file" <<EOF
 DATABASE_URL: "file:./dev.db"
@@ -53,12 +74,12 @@ if [ -n "${GOOGLE_CLIENT_SECRET:-}" ]; then
   printf 'GOOGLE_CLIENT_SECRET: "%s"\n' "$GOOGLE_CLIENT_SECRET" >> "$tmp_env_file"
 fi
 
-if [ -n "${APP_BASE_URL:-}" ]; then
-  printf 'APP_BASE_URL: "%s"\n' "$APP_BASE_URL" >> "$tmp_env_file"
+if [ -n "$deploy_app_base_url" ]; then
+  printf 'APP_BASE_URL: "%s"\n' "$deploy_app_base_url" >> "$tmp_env_file"
 fi
 
-if [ -n "${GOOGLE_REDIRECT_URI:-}" ]; then
-  printf 'GOOGLE_REDIRECT_URI: "%s"\n' "$GOOGLE_REDIRECT_URI" >> "$tmp_env_file"
+if [ -n "$deploy_redirect_uri" ]; then
+  printf 'GOOGLE_REDIRECT_URI: "%s"\n' "$deploy_redirect_uri" >> "$tmp_env_file"
 fi
 
 gcloud run deploy "$CLOUD_RUN_SERVICE" \
@@ -83,8 +104,15 @@ service_url="$(gcloud run services describe "$CLOUD_RUN_SERVICE" \
   --region "$CLOUD_RUN_REGION" \
   --format 'value(status.url)')"
 
-resolved_app_base_url="${APP_BASE_URL:-$service_url}"
+resolved_app_base_url="${APP_BASE_URL:-}"
+if [ -z "$resolved_app_base_url" ] || is_local_url "$resolved_app_base_url"; then
+  resolved_app_base_url="$service_url"
+fi
+
 resolved_redirect_uri="${GOOGLE_REDIRECT_URI:-}"
+if [ -n "$resolved_redirect_uri" ] && is_local_url "$resolved_redirect_uri"; then
+  resolved_redirect_uri=""
+fi
 
 if [ -z "$resolved_redirect_uri" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ] && [ -n "${GOOGLE_CLIENT_SECRET:-}" ]; then
   resolved_redirect_uri="${resolved_app_base_url}/api/youtube/callback"
