@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { SearchIcon, UploadIcon, XIcon } from "lucide-react";
 
+import { AgentActivityPanel } from "@/components/AgentActivityPanel";
 import { BrandLogo } from "@/components/BrandLogo";
 import { IdeaCards } from "@/components/IdeaCards";
 import { JobStatusBadge } from "@/components/JobStatusBadge";
@@ -61,6 +62,13 @@ type JobRecord = {
   logs: string[] | null;
   outputJson: unknown;
   renders?: Array<{ id: string; variantIndex: number; path: string; duration: number }>;
+};
+
+type ActiveJobRecord = {
+  id: string;
+  type: string;
+  status: JobRecord["status"];
+  logs: string[] | null;
 };
 
 type RenderJobOutput = {
@@ -134,7 +142,7 @@ export default function DashboardPage() {
     [],
   );
 
-  const [activeJob, setActiveJob] = useState<{ id: string; type: string; status: JobRecord["status"] } | null>(null);
+  const [activeJob, setActiveJob] = useState<ActiveJobRecord | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMetadataLoading, setIsMetadataLoading] = useState(false);
@@ -253,17 +261,17 @@ export default function DashboardPage() {
       }
 
       const job = payload.job as JobRecord;
-      setActiveJob({ id: job.id, type, status: job.status });
+      setActiveJob({ id: job.id, type, status: job.status, logs: job.logs });
 
       if (job.status === "complete") {
         rememberJob(job, type);
-        setActiveJob({ id: job.id, type, status: "complete" });
+        setActiveJob({ id: job.id, type, status: "complete", logs: job.logs });
         return job;
       }
 
       if (job.status === "failed") {
         rememberJob(job, type);
-        setActiveJob({ id: job.id, type, status: "failed" });
+        setActiveJob({ id: job.id, type, status: "failed", logs: job.logs });
         const outputError =
           job.outputJson && typeof job.outputJson === "object" && "error" in job.outputJson ? job.outputJson.error : null;
         const logs = Array.isArray(job.logs) ? job.logs : [];
@@ -1547,6 +1555,11 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             {message ? <p className="mb-3 rounded-md bg-[var(--cp-success-bg)] p-2 text-sm text-[var(--cp-success)]">{message}</p> : null}
             {error ? <p className="mb-3 rounded-md bg-[var(--cp-error-bg)] p-2 text-sm text-[var(--cp-error)]">{error}</p> : null}
+            {activeJob ? (
+              <div className="mb-4">
+                <AgentActivityPanel logs={activeJob.logs} status={activeJob.status} title="Live Agent Workflow" />
+              </div>
+            ) : null}
             {renderStepContent()}
 
             {latestYoutubeJob ? (

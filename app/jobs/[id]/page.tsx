@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { AgentActivityPanel } from "@/components/AgentActivityPanel";
 import { BrandLogo } from "@/components/BrandLogo";
 
 type JobResponse = {
@@ -86,6 +87,10 @@ export default function JobDetailPage() {
             <p>
               <strong>Updated:</strong> {new Date(data.job.updatedAt).toLocaleString()}
             </p>
+          </div>
+
+          <div>
+            <AgentActivityPanel logs={data.job.logs} status={data.job.status} />
           </div>
 
           <div>

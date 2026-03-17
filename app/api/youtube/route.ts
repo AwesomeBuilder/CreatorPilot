@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { prisma } from "@/lib/db";
-import { probeMedia } from "@/lib/ffmpeg";
+import { createCreatorPilotOrchestrator } from "@/lib/agents/orchestrator";
+import { createAgentTools } from "@/lib/agents/tools";
 import { createJob, runJobInBackground } from "@/lib/jobs";
-import { withLocalRenderPath } from "@/lib/render-storage";
 import { resolveUser } from "@/lib/user";
-import { getYoutubeAuthUrl, getYoutubeConnectionStatus, uploadVideoToYoutube } from "@/lib/youtube";
+import { getYoutubeAuthUrl, getYoutubeConnectionStatus } from "@/lib/youtube";
 
 export const runtime = "nodejs";
 
@@ -47,25 +46,19 @@ export async function POST(req: Request) {
   }
 
   const user = await resolveUser(req);
+  const tools = createAgentTools();
+  const orchestrator = createCreatorPilotOrchestrator({ tools });
 
-  let resolvedPath = parsed.data.renderPath;
-
-  if (!resolvedPath && parsed.data.renderId) {
-    const render = await prisma.render.findFirst({
-      where: {
-        id: parsed.data.renderId,
-        userId: user.id,
-      },
-    });
-
-    resolvedPath = render?.path;
-  }
+  const resolvedPath = await tools.resolveRenderPath({
+    userId: user.id,
+    input: parsed.data,
+  });
 
   if (!resolvedPath) {
     return NextResponse.json({ error: "No render file was provided." }, { status: 400 });
   }
 
-  const renderProbe = await withLocalRenderPath(resolvedPath, async (localPath) => probeMedia(localPath));
+  const renderProbe = await tools.probeStoredRender(resolvedPath);
   if (!renderProbe.hasAudio) {
     return NextResponse.json(
       { error: "This render has no audio track. Generate narration/audio before uploading to YouTube." },
@@ -80,21 +73,24 @@ export async function POST(req: Request) {
   });
 
   runJobInBackground(job.id, async ({ log }) => {
-    await log("Uploading rendered video to YouTube.");
-
-    const result = await withLocalRenderPath(resolvedPath, async (localPath) =>
-      uploadVideoToYoutube({
-        userId: user.id,
-        videoPath: localPath,
+    const state = await orchestrator.runPublishingWorkflow({
+      user,
+      jobId: job.id,
+      log,
+      input: {
+        renderPath: resolvedPath,
         title: parsed.data.title,
         description: parsed.data.description,
         tags: parsed.data.tags,
         publishAt: parsed.data.publishAt,
-      }),
-    );
+      },
+    });
 
-    await log(`Upload finished in ${result.mode} mode.`);
-    return result;
+    if (!state.publishResult) {
+      throw new Error("Publishing workflow completed without a result.");
+    }
+
+    return state.publishResult;
   });
 
   return NextResponse.json({ jobId: job.id, status: job.status });

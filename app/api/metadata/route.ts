@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { generateMetadata } from "@/lib/metadata";
+import { createCreatorPilotOrchestrator } from "@/lib/agents/orchestrator";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
@@ -28,12 +28,14 @@ export async function POST(req: Request) {
   }
 
   const user = await resolveUser(req);
-
-  const metadata = await generateMetadata({
-    trend: parsed.data.trend,
-    idea: parsed.data.idea,
-    tone: user.tone,
+  const orchestrator = createCreatorPilotOrchestrator();
+  const state = await orchestrator.runMetadataWorkflow({
+    user,
+    input: {
+      trend: parsed.data.trend,
+      idea: parsed.data.idea,
+    },
   });
 
-  return NextResponse.json({ metadata });
+  return NextResponse.json({ metadata: state.metadata });
 }

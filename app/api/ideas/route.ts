@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { createCreatorPilotOrchestrator } from "@/lib/agents/orchestrator";
 import { createJob, runJobInBackground } from "@/lib/jobs";
-import { generateIdeas } from "@/lib/ideas";
-import { resolveRequestedMediaAssets } from "@/lib/media-assets";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
@@ -52,6 +51,7 @@ export async function POST(req: Request) {
 
   const workflow = parsed.data.workflow ?? "trend";
   const user = await resolveUser(req);
+  const orchestrator = createCreatorPilotOrchestrator();
 
   const job = await createJob({
     userId: user.id,
@@ -60,62 +60,26 @@ export async function POST(req: Request) {
   });
 
   runJobInBackground(job.id, async ({ log }) => {
-    const linkedAssets =
-      parsed.data.mediaAssetIds.length > 0
-        ? await resolveRequestedMediaAssets({
-            userId: user.id,
-            mediaReferences: parsed.data.mediaAssetIds,
-          })
-        : [];
+    const state = await orchestrator.runIdeaWorkflow({
+      user,
+      jobId: job.id,
+      log,
+      input: {
+        workflow,
+        trend: parsed.data.trend,
+        mediaAssetIds: parsed.data.mediaAssetIds,
+        brief: parsed.data.brief,
+      },
+    });
 
-    if (workflow === "media-led") {
-      await log("Assessing uploaded media and optional brief for media-led idea generation.");
-    } else {
-      await log("Generating three ideas from selected trend.");
+    const result = state.ideasResult;
+    if (!result) {
+      throw new Error("Idea workflow completed without a result.");
     }
-
-    if (linkedAssets.length > 0) {
-      await log(`Linked ${linkedAssets.length} uploaded media asset${linkedAssets.length === 1 ? "" : "s"} into idea generation.`);
-    }
-
-    const result =
-      workflow === "media-led"
-        ? await generateIdeas({
-            workflow: "media-led",
-            brief: parsed.data.brief,
-            niche: user.niche,
-            tone: user.tone,
-            mediaAssets: linkedAssets.map((asset) => ({
-              id: asset.id,
-              path: asset.path,
-              type: asset.type as "image" | "video",
-            })),
-          })
-        : await generateIdeas({
-            workflow: "trend",
-            trend: parsed.data.trend!,
-            niche: user.niche,
-            tone: user.tone,
-            mediaAssets: linkedAssets.map((asset) => ({
-              id: asset.id,
-              path: asset.path,
-              type: asset.type as "image" | "video",
-            })),
-          });
-
-    if (result.generationMode === "needs-brief") {
-      await log("Need more text context before a confident media-led angle can be generated.");
-    } else if (result.generationMode === "single-plan") {
-      await log("Generated one render-ready angle from the uploaded media context.");
-    } else {
-      await log(`Generated ${result.ideas.length} idea candidate${result.ideas.length === 1 ? "" : "s"}.`);
-    }
-
-    await log("Ideas generated successfully.");
 
     return {
       ...result,
-      linkedMediaCount: linkedAssets.length,
+      linkedMediaCount: state.selectedMediaAssets?.length ?? 0,
       workflow,
     };
   });

@@ -39,69 +39,60 @@ RSS trends or uploaded media
 - Mock or live YouTube upload, depending on OAuth configuration
 - Job tracking with persisted logs and polling UI
 
-## System Design (Current Architecture)
+## System Design (Multi-Agent Architecture)
 
-![Creator Pilot architecture diagram](docs/architecture/creator-pilot-architecture.jpg)
+![Creator Pilot multi-agent architecture diagram](docs/architecture/creator-pilot-architecture.svg)
 
 ```text
-Next.js UI
-  /onboarding
-  /dashboard
-  /jobs/[id]
+Creator Workspace + Route Handlers
+  /dashboard, /jobs/[id], /api/trends, /api/ideas,
+  /api/storyboard, /api/render, /api/metadata, /api/youtube
 
         |
         v
 
-Next.js Route Handlers
-  /api/profile
-  /api/sources
-  /api/trends
-  /api/ideas
-  /api/media
-  /api/media/relevance
-  /api/storyboard
-  /api/storyboard/preview
-  /api/render
-  /api/renders/[id]
-  /api/metadata
-  /api/schedule
-  /api/youtube
-  /api/youtube/callback
-  /api/jobs/[id]
-  /api/health
+Orchestrator Agent
+  runTrendDiscoveryWorkflow()
+  runIdeaWorkflow()
+  runStoryboardWorkflow()
+  runRenderWorkflow()
+  runMetadataWorkflow()
+  runPublishingWorkflow()
 
         |
         v
 
-Core Services in lib/
-  rss + trends
-  ideas
-  storyboard + editorial timing
-  generated-media
-  narration
-  render
-  youtube
-  jobs
+Specialized Agents
+  Profile / Memory Agent
+  Trend Discovery Agent
+  Ideation Agent
+  Media Selection Agent
+  Storyboard Agent
+  Render Agent
+  Metadata Agent
+  Publishing Agent
 
         |
         v
 
-Persistence + External Systems
-  Prisma + SQLite
+Memory + Tools + Runtime
+  Prisma + SQLite (User, Source, Job, Render)
   local filesystem (/uploads, /renders)
-  Google Gemini / Veo APIs
-  Google OAuth + YouTube Data API v3
-  local FFmpeg / ffprobe binaries
+  RSS feeds
+  Gemini / Veo APIs
+  FFmpeg / ffprobe
+  YouTube Data API
+  in-process background jobs
 ```
 
-- UI layer: the app is a single Next.js service with onboarding, dashboard, and job-inspection pages.
-- API layer: all server behavior lives in Route Handlers, so the frontend and backend deploy together.
-- Orchestration layer: `lib/ideas.ts`, `lib/storyboard.ts`, `lib/render.ts`, `lib/narration.ts`, and `lib/youtube.ts` coordinate the core workflow.
-- Persistence layer: Prisma stores users, RSS sources, uploaded media, jobs, renders, and OAuth credentials in SQLite.
-- File layer: uploaded assets, generated support media, and render outputs are stored on the local filesystem and streamed back through ranged responses.
-- Job model: long-running work is recorded in the `Job` table and executed in-process via the background runner in `lib/jobs.ts`; the UI polls `/api/jobs/[id]` for status and logs.
-- Deployment model: the current Cloud Run setup runs the Next.js UI and API as one service. SQLite and media files remain local to the container, so the deployment is intentionally single-instance and demo-oriented.
-- Diagram source: `npm run diagram:architecture` regenerates [`docs/architecture/creator-pilot-architecture.jpg`](docs/architecture/creator-pilot-architecture.jpg) from [`scripts/generate-architecture-diagram.mjs`](scripts/generate-architecture-diagram.mjs).
+- UI and API still ship together as one Next.js service, but workflow control is now explicit in `lib/agents/orchestrator.ts`.
+- Route Handlers delegate to specialized agents under `lib/agents/` instead of stitching every step inline.
+- Memory is grounded in the current Prisma schema: creator profile and preferences come from `User` and `Source`, while recent outputs and publishing feedback come from `Job.outputJson` and `Render`.
+- Tool usage is also grounded in current code: RSS feeds, Gemini/Veo endpoints, FFmpeg/ffprobe, the YouTube Data API, and local asset storage.
+- Long-running work still runs through `lib/jobs.ts`, and the UI now reads agent-level log lines from those job records.
+- The feedback loop is practical rather than invented: Publishing -> Memory -> Ideation is implemented by reading recent upload/render job outputs back into the memory snapshot for later idea generation.
+- Diagram source: `npm run diagram:architecture` regenerates `docs/architecture/creator-pilot-architecture.svg` and `docs/architecture/creator-pilot-architecture.jpg`.
+- Full architecture notes, gap analysis, and phased migration plan: `docs/architecture/creator-pilot-multi-agent-architecture.md`.
 
 ## Project Structure
 
@@ -130,6 +121,7 @@ app/
     jobs/[id]/
 components/
 lib/
+  agents/
 prisma/
 scripts/
 uploads/

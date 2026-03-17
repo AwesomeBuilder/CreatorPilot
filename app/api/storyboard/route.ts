@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { resolveRequestedMediaAssets } from "@/lib/media-assets";
-import { buildStoryboardPlan, hydrateStoryboardGeneratedPreviews, storyboardPlanToAssessment } from "@/lib/storyboard";
+import { createCreatorPilotOrchestrator } from "@/lib/agents/orchestrator";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
@@ -48,39 +47,31 @@ export async function POST(req: Request) {
     }
 
     const user = await resolveUser(req);
-
-    const assets = await resolveRequestedMediaAssets({
-      userId: user.id,
-      mediaReferences: parsed.data.mediaAssetIds,
+    const orchestrator = createCreatorPilotOrchestrator();
+    const state = await orchestrator.runStoryboardWorkflow({
+      user,
+      input: {
+        trend: parsed.data.trend,
+        idea: parsed.data.idea,
+        mediaAssetIds: parsed.data.mediaAssetIds,
+        preference: parsed.data.preference,
+      },
     });
 
-    if (assets.length === 0) {
-      return NextResponse.json({ error: "No valid media assets found for storyboarding." }, { status: 400 });
+    if (!state.storyboard) {
+      throw new Error("Storyboard workflow completed without a storyboard.");
     }
 
-    const baseStoryboard = await buildStoryboardPlan({
-      trend: parsed.data.trend,
-      idea: parsed.data.idea,
-      assets: assets.map((asset) => ({
-        id: asset.id,
-        path: asset.path,
-        type: asset.type as "image" | "video",
-      })),
-      preference: parsed.data.preference,
-    });
-    const storyboard = await hydrateStoryboardGeneratedPreviews({
-      userId: user.id,
-      scopeId: `storyboard-${Date.now()}`,
-      storyboard: baseStoryboard,
-    });
-
     return NextResponse.json({
-      storyboard,
-      assessment: storyboardPlanToAssessment(storyboard),
+      storyboard: state.storyboard,
+      assessment: state.assessment,
     });
   } catch (error) {
     console.error("POST /api/storyboard failed", error);
-    const status = error instanceof SyntaxError ? 400 : 500;
+    const status =
+      error instanceof SyntaxError || (error instanceof Error && error.message === "No valid media assets found for storyboarding.")
+        ? 400
+        : 500;
     return NextResponse.json({ error: routeErrorMessage(error, "Failed to analyze coverage.") }, { status });
   }
 }

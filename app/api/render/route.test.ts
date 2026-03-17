@@ -4,24 +4,23 @@ import type { StoryboardPlan, Trend } from "@/lib/types";
 
 const routeMocks = vi.hoisted(() => ({
   prisma: {
-    mediaAsset: {
-      findMany: vi.fn(),
-    },
     job: {
       update: vi.fn(),
     },
-    render: {
-      create: vi.fn(),
-    },
-    $transaction: vi.fn(),
   },
   appendJobLog: vi.fn(),
   createJob: vi.fn(),
   runJobInBackground: vi.fn(),
-  renderVideoVariants: vi.fn(),
-  buildStoryboardPlan: vi.fn(),
-  storyboardPlanToAssessment: vi.fn(),
   resolveUser: vi.fn(),
+  runStoryboardWorkflow: vi.fn(),
+  runRenderWorkflow: vi.fn(),
+}));
+
+vi.mock("@/lib/agents/orchestrator", () => ({
+  createCreatorPilotOrchestrator: () => ({
+    runStoryboardWorkflow: routeMocks.runStoryboardWorkflow,
+    runRenderWorkflow: routeMocks.runRenderWorkflow,
+  }),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -33,19 +32,6 @@ vi.mock("@/lib/jobs", () => ({
   createJob: routeMocks.createJob,
   runJobInBackground: routeMocks.runJobInBackground,
 }));
-
-vi.mock("@/lib/render", () => ({
-  renderVideoVariants: routeMocks.renderVideoVariants,
-}));
-
-vi.mock("@/lib/storyboard", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/storyboard")>("@/lib/storyboard");
-  return {
-    ...actual,
-    buildStoryboardPlan: routeMocks.buildStoryboardPlan,
-    storyboardPlanToAssessment: routeMocks.storyboardPlanToAssessment,
-  };
-});
 
 vi.mock("@/lib/user", () => ({
   resolveUser: routeMocks.resolveUser,
@@ -86,31 +72,7 @@ function makeStoryboard(overrides?: Partial<StoryboardPlan>): StoryboardPlan {
         shotCount: 3,
       },
     ],
-    candidates: [
-      {
-        candidateId: "asset-1:shot-1",
-        assetId: "asset-1",
-        assetPath: "/tmp/input-a.mp4",
-        assetType: "video",
-        source: "user",
-        label: "input-a.mp4 @ 0:03",
-        durationSeconds: 12,
-        frameTimeSeconds: 3,
-        shotStartSeconds: 1.8,
-        shotEndSeconds: 4.8,
-        visualSummary: "Editor UI showing the workflow.",
-        compactSummary: "Workflow UI.",
-        ocrText: ["Storyboard", "Render"],
-        uiText: ["Editor"],
-        logos: ["OpenAI"],
-        entities: ["Creator Pilot"],
-        topicCues: ["workflow", "creator"],
-        fitScore: 82,
-        fitReason: "The frame directly shows the workflow being discussed.",
-        energyScore: 68,
-        bestUseCases: ["hook", "proof"],
-      },
-    ],
+    candidates: [],
     beats: [
       {
         beatId: "beat-1",
@@ -202,17 +164,13 @@ function makeStoryboard(overrides?: Partial<StoryboardPlan>): StoryboardPlan {
 describe("POST /api/render", () => {
   beforeEach(() => {
     delete process.env.RUN_RENDER_JOBS_INLINE;
-    routeMocks.prisma.mediaAsset.findMany.mockReset();
     routeMocks.prisma.job.update.mockReset();
-    routeMocks.prisma.render.create.mockReset();
-    routeMocks.prisma.$transaction.mockReset();
     routeMocks.appendJobLog.mockReset();
     routeMocks.createJob.mockReset();
     routeMocks.runJobInBackground.mockReset();
-    routeMocks.renderVideoVariants.mockReset();
-    routeMocks.buildStoryboardPlan.mockReset();
-    routeMocks.storyboardPlanToAssessment.mockReset();
     routeMocks.resolveUser.mockReset();
+    routeMocks.runStoryboardWorkflow.mockReset();
+    routeMocks.runRenderWorkflow.mockReset();
   });
 
   it("returns 400 for invalid render requests", async () => {
@@ -239,8 +197,15 @@ describe("POST /api/render", () => {
   });
 
   it("returns 400 when no valid media assets exist", async () => {
-    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
-    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([]);
+    routeMocks.resolveUser.mockResolvedValue({
+      id: "user-1",
+      niche: "AI & Tech",
+      tone: "clear",
+      timezone: "America/Los_Angeles",
+    });
+    routeMocks.runStoryboardWorkflow.mockResolvedValue({
+      selectedMediaAssets: [],
+    });
 
     const response = await POST(
       new Request("http://localhost/api/render", {
@@ -258,25 +223,30 @@ describe("POST /api/render", () => {
     expect(await response.json()).toEqual({ error: "No valid media assets found for rendering." });
   });
 
-  it("returns 400 when storyboard coverage blocks the selected assets", async () => {
-    const blockedStoryboard = makeStoryboard({
-      coverageScore: 24,
-      coverageSummary: "Coverage is too weak to produce a coherent explainer. Upload more topic-specific screenshots or clips before rendering.",
+  it("returns 400 when storyboard coverage still blocks rendering", async () => {
+    routeMocks.resolveUser.mockResolvedValue({
+      id: "user-1",
+      niche: "AI & Tech",
+      tone: "clear",
+      timezone: "America/Los_Angeles",
+    });
+    const storyboard = makeStoryboard({
       shouldBlock: true,
-      requiresMoreRelevantMedia: true,
+      coverageSummary: "Upload more relevant media before rendering.",
     });
 
-    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
-    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: "/tmp/input-a.png", type: "image" }]);
-    routeMocks.buildStoryboardPlan.mockResolvedValue(blockedStoryboard);
-    routeMocks.storyboardPlanToAssessment.mockReturnValue({
-      status: "irrelevant",
-      confidence: 0.24,
-      summary: blockedStoryboard.coverageSummary,
-      matchedSignals: ["workflow"],
-      shouldBlock: true,
-      coverageScore: 24,
-      requiresGeneratedSupport: false,
+    routeMocks.runStoryboardWorkflow.mockResolvedValue({
+      selectedMediaAssets: [{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }],
+      storyboard,
+      assessment: {
+        status: "irrelevant",
+        confidence: 0.92,
+        summary: storyboard.coverageSummary,
+        matchedSignals: [],
+        shouldBlock: true,
+        coverageScore: 31,
+        requiresGeneratedSupport: false,
+      },
     });
 
     const response = await POST(
@@ -286,56 +256,102 @@ describe("POST /api/render", () => {
           trend,
           idea,
           mediaAssetIds: ["asset-1"],
-          preference: "auto",
+          preference: "shorts",
         }),
       }),
     );
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: blockedStoryboard.coverageSummary,
+      error: "Upload more relevant media before rendering.",
       assessment: {
         status: "irrelevant",
-        confidence: 0.24,
-        summary: blockedStoryboard.coverageSummary,
-        matchedSignals: ["workflow"],
+        confidence: 0.92,
+        summary: storyboard.coverageSummary,
+        matchedSignals: [],
         shouldBlock: true,
-        coverageScore: 24,
+        coverageScore: 31,
         requiresGeneratedSupport: false,
       },
-      storyboard: blockedStoryboard,
+      storyboard,
     });
   });
 
-  it("passes the storyboard into the renderer and persists the generated variants", async () => {
+  it("rejects storyboards that reference unselected assets", async () => {
+    routeMocks.resolveUser.mockResolvedValue({
+      id: "user-1",
+      niche: "AI & Tech",
+      tone: "clear",
+      timezone: "America/Los_Angeles",
+    });
+    routeMocks.runStoryboardWorkflow.mockResolvedValue({
+      selectedMediaAssets: [{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }],
+      storyboard: makeStoryboard({
+        beats: [
+          {
+            ...makeStoryboard().beats[0],
+            selectedAssetId: "asset-2",
+          },
+          ...makeStoryboard().beats.slice(1),
+        ],
+      }),
+      assessment: {
+        status: "relevant",
+        confidence: 0.82,
+        summary: "Looks fine.",
+        matchedSignals: ["workflow"],
+        shouldBlock: false,
+        coverageScore: 78,
+        requiresGeneratedSupport: false,
+      },
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/render", {
+        method: "POST",
+        body: JSON.stringify({
+          trend,
+          idea,
+          mediaAssetIds: ["asset-1"],
+          preference: "shorts",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Storyboard references media that is not part of the selected assets." });
+  });
+
+  it("queues render execution and delegates the background work to the orchestrator", async () => {
     const storyboard = makeStoryboard();
 
-    routeMocks.createJob.mockResolvedValue({ id: "job-1", status: "queued" });
-    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
-    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([
-      { id: "asset-1", path: "/tmp/input-a.mp4", type: "video" },
-      { id: "asset-2", path: "/tmp/input-b.mp4", type: "video" },
-    ]);
-    routeMocks.storyboardPlanToAssessment.mockReturnValue({
-      status: "relevant",
-      confidence: 0.82,
-      summary: storyboard.coverageSummary,
-      matchedSignals: ["workflow", "creator"],
-      shouldBlock: false,
-      coverageScore: 78,
-      requiresGeneratedSupport: false,
+    routeMocks.resolveUser.mockResolvedValue({
+      id: "user-1",
+      niche: "AI & Tech",
+      tone: "clear",
+      timezone: "America/Los_Angeles",
     });
-    routeMocks.prisma.render.create.mockReturnValueOnce("render-query-1").mockReturnValueOnce("render-query-2").mockReturnValueOnce("render-query-3");
-    routeMocks.prisma.$transaction.mockResolvedValue(undefined);
-    routeMocks.renderVideoVariants.mockResolvedValue({
-      format: "shorts",
-      reason: storyboard.coverageSummary,
+    routeMocks.runStoryboardWorkflow.mockResolvedValue({
+      memory: { summary: "Creator profile summary." },
+      selectedMediaAssets: [{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }],
       storyboard,
-      variants: [
-        { variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 },
-        { variantIndex: 2, path: "/tmp/out-2.mp4", duration: 12 },
-        { variantIndex: 3, path: "/tmp/out-3.mp4", duration: 12 },
-      ],
+      assessment: {
+        status: "relevant",
+        confidence: 0.82,
+        summary: storyboard.coverageSummary,
+        matchedSignals: ["workflow", "creator"],
+        shouldBlock: false,
+        coverageScore: 78,
+        requiresGeneratedSupport: false,
+      },
+    });
+    routeMocks.createJob.mockResolvedValue({ id: "job-1", status: "queued" });
+    routeMocks.runRenderWorkflow.mockResolvedValue({
+      renderOutput: {
+        format: "shorts",
+        reason: "Portrait source.",
+        variants: [{ variantIndex: 1, path: "/tmp/render.mp4", duration: 41, hasAudio: true }],
+      },
     });
 
     let backgroundTask:
@@ -352,7 +368,7 @@ describe("POST /api/render", () => {
         body: JSON.stringify({
           trend,
           idea,
-          mediaAssetIds: ["asset-1", "asset-2"],
+          mediaAssetIds: ["asset-1"],
           preference: "shorts",
           storyboard,
         }),
@@ -361,161 +377,67 @@ describe("POST /api/render", () => {
 
     expect(await response.json()).toEqual({ jobId: "job-1", status: "queued" });
 
-    const log = vi.fn().mockResolvedValue(undefined);
-    const result = await backgroundTask?.({ log });
+    const result = await backgroundTask?.({ log: vi.fn().mockResolvedValue(undefined) });
 
-    expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
-      where: {
-        userId: "user-1",
-        OR: [
-          {
-            id: {
-              in: ["asset-1", "asset-2"],
-            },
-          },
-          {
-            path: {
-              in: ["asset-1", "asset-2"],
-            },
-          },
-        ],
+    expect(routeMocks.runRenderWorkflow).toHaveBeenCalledWith({
+      user: {
+        id: "user-1",
+        niche: "AI & Tech",
+        tone: "clear",
+        timezone: "America/Los_Angeles",
       },
-      orderBy: { createdAt: "asc" },
-    });
-    expect(routeMocks.buildStoryboardPlan).not.toHaveBeenCalled();
-    expect(routeMocks.renderVideoVariants).toHaveBeenCalledWith({
-      userId: "user-1",
       jobId: "job-1",
-      title: idea.videoTitle,
-      onProgress: expect.any(Function),
-      storyboard: expect.objectContaining({
-        ...storyboard,
-        beats: expect.arrayContaining(
-          storyboard.beats.map((beat) =>
-            expect.objectContaining({
-              ...beat,
-              supportingVisuals: expect.any(Array),
-            }),
-          ),
-        ),
-      }),
-    });
-    expect(routeMocks.prisma.render.create).toHaveBeenNthCalledWith(1, {
-      data: {
-        userId: "user-1",
-        jobId: "job-1",
-        variantIndex: 1,
-        path: "/tmp/out-1.mp4",
-        duration: 12,
+      log: expect.any(Function),
+      input: {
+        trend,
+        idea,
+        mediaAssetIds: ["asset-1"],
+        preference: "shorts",
+        storyboard,
+      },
+      preparedState: {
+        memory: { summary: "Creator profile summary." },
+        selectedMediaAssets: [{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }],
+        storyboard,
+        assessment: {
+          status: "relevant",
+          confidence: 0.82,
+          summary: storyboard.coverageSummary,
+          matchedSignals: ["workflow", "creator"],
+          shouldBlock: false,
+          coverageScore: 78,
+          requiresGeneratedSupport: false,
+        },
       },
     });
-    expect(routeMocks.prisma.$transaction).toHaveBeenCalledWith(["render-query-1", "render-query-2", "render-query-3"]);
     expect(result).toEqual({
       format: "shorts",
-      reason: storyboard.coverageSummary,
-      storyboard,
-      variants: [
-        { variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 },
-        { variantIndex: 2, path: "/tmp/out-2.mp4", duration: 12 },
-        { variantIndex: 3, path: "/tmp/out-3.mp4", duration: 12 },
-      ],
-    });
-  });
-
-  it("can run the render inline when RUN_RENDER_JOBS_INLINE is enabled", async () => {
-    process.env.RUN_RENDER_JOBS_INLINE = "true";
-    const storyboard = makeStoryboard();
-
-    routeMocks.createJob.mockResolvedValue({ id: "job-1", status: "queued" });
-    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
-    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }]);
-    routeMocks.storyboardPlanToAssessment.mockReturnValue({
-      status: "relevant",
-      confidence: 0.82,
-      summary: storyboard.coverageSummary,
-      matchedSignals: ["workflow", "creator"],
-      shouldBlock: false,
-      coverageScore: 78,
-      requiresGeneratedSupport: false,
-    });
-    routeMocks.prisma.job.update.mockResolvedValue(undefined);
-    routeMocks.appendJobLog.mockResolvedValue(undefined);
-    routeMocks.prisma.render.create.mockReturnValueOnce("render-query-1");
-    routeMocks.prisma.$transaction.mockResolvedValue(undefined);
-    routeMocks.renderVideoVariants.mockResolvedValue({
-      format: "shorts",
-      reason: storyboard.coverageSummary,
-      storyboard,
-      variants: [{ variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 }],
-      audioStatus: "missing",
-      audioError: "Generated narration is disabled by RENDER_ENABLE_GENERATED_NARRATION.",
-    });
-
-    const response = await POST(
-      new Request("http://localhost/api/render", {
-        method: "POST",
-        body: JSON.stringify({
-          trend,
-          idea,
-          mediaAssetIds: ["asset-1"],
-          preference: "shorts",
-          storyboard,
-        }),
-      }),
-    );
-
-    expect(await response.json()).toEqual({ jobId: "job-1", status: "complete" });
-    expect(routeMocks.runJobInBackground).not.toHaveBeenCalled();
-    expect(routeMocks.prisma.job.update).toHaveBeenNthCalledWith(1, {
-      where: { id: "job-1" },
-      data: { status: "running" },
-    });
-    expect(routeMocks.prisma.job.update).toHaveBeenNthCalledWith(2, {
-      where: { id: "job-1" },
-      data: {
-        status: "complete",
-        outputJson: JSON.stringify({
-          format: "shorts",
-          reason: storyboard.coverageSummary,
-          storyboard,
-          variants: [{ variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 }],
-          audioStatus: "missing",
-          audioError: "Generated narration is disabled by RENDER_ENABLE_GENERATED_NARRATION.",
-        }),
-      },
-    });
-    expect(routeMocks.renderVideoVariants).toHaveBeenCalledWith({
-      userId: "user-1",
-      jobId: "job-1",
-      title: idea.videoTitle,
-      onProgress: expect.any(Function),
-      storyboard: expect.objectContaining({
-        ...storyboard,
-        beats: expect.arrayContaining(
-          storyboard.beats.map((beat) =>
-            expect.objectContaining({
-              ...beat,
-              supportingVisuals: expect.any(Array),
-            }),
-          ),
-        ),
-      }),
+      reason: "Portrait source.",
+      variants: [{ variantIndex: 1, path: "/tmp/render.mp4", duration: 41, hasAudio: true }],
     });
   });
 
   it("returns JSON when an unexpected render error is thrown", async () => {
     const storyboard = makeStoryboard();
 
-    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
-    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }]);
-    routeMocks.storyboardPlanToAssessment.mockReturnValue({
-      status: "relevant",
-      confidence: 0.82,
-      summary: storyboard.coverageSummary,
-      matchedSignals: ["workflow", "creator"],
-      shouldBlock: false,
-      coverageScore: 78,
-      requiresGeneratedSupport: false,
+    routeMocks.resolveUser.mockResolvedValue({
+      id: "user-1",
+      niche: "AI & Tech",
+      tone: "clear",
+      timezone: "America/Los_Angeles",
+    });
+    routeMocks.runStoryboardWorkflow.mockResolvedValue({
+      selectedMediaAssets: [{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }],
+      storyboard,
+      assessment: {
+        status: "relevant",
+        confidence: 0.82,
+        summary: storyboard.coverageSummary,
+        matchedSignals: ["workflow", "creator"],
+        shouldBlock: false,
+        coverageScore: 78,
+        requiresGeneratedSupport: false,
+      },
     });
     routeMocks.createJob.mockRejectedValue(new Error("upstream request timeout"));
 
@@ -534,126 +456,5 @@ describe("POST /api/render", () => {
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "upstream request timeout" });
-  });
-
-  it("resolves render assets when the request sends stored media paths", async () => {
-    const assetPath = "/app/uploads/user-1/manual-123/input-a.mp4";
-    const storyboard = makeStoryboard({
-      assetSummaries: [
-        {
-          assetId: "asset-1",
-          assetPath,
-          type: "video",
-          compactSummary: "Shows the product workflow.",
-          bestFitScore: 84,
-          topCues: ["workflow", "editor", "creator"],
-          shotCount: 3,
-        },
-      ],
-      candidates: [
-        {
-          candidateId: "asset-1:shot-1",
-          assetId: "asset-1",
-          assetPath,
-          assetType: "video",
-          source: "user",
-          label: "input-a.mp4 @ 0:03",
-          durationSeconds: 12,
-          frameTimeSeconds: 3,
-          shotStartSeconds: 1.8,
-          shotEndSeconds: 4.8,
-          visualSummary: "Editor UI showing the workflow.",
-          compactSummary: "Workflow UI.",
-          ocrText: ["Storyboard", "Render"],
-          uiText: ["Editor"],
-          logos: ["OpenAI"],
-          entities: ["Creator Pilot"],
-          topicCues: ["workflow", "creator"],
-          fitScore: 82,
-          fitReason: "The frame directly shows the workflow being discussed.",
-          energyScore: 68,
-          bestUseCases: ["hook", "proof"],
-        },
-      ],
-      beats: makeStoryboard().beats.map((beat) => ({
-        ...beat,
-        selectedAssetPath: beat.selectedAssetPath ? assetPath : null,
-      })),
-    });
-
-    routeMocks.createJob.mockResolvedValue({ id: "job-2", status: "queued" });
-    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
-    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: assetPath, type: "video" }]);
-    routeMocks.storyboardPlanToAssessment.mockReturnValue({
-      status: "relevant",
-      confidence: 0.82,
-      summary: storyboard.coverageSummary,
-      matchedSignals: ["workflow", "creator"],
-      shouldBlock: false,
-      coverageScore: 78,
-      requiresGeneratedSupport: false,
-    });
-    routeMocks.renderVideoVariants.mockResolvedValue({
-      format: "shorts",
-      reason: storyboard.coverageSummary,
-      storyboard,
-      variants: [{ variantIndex: 1, path: "/tmp/out-1.mp4", duration: 12 }],
-    });
-
-    let backgroundTask:
-      | ((helpers: { log: (message: string) => Promise<void> }) => Promise<unknown>)
-      | undefined;
-
-    routeMocks.runJobInBackground.mockImplementation((_: string, task: typeof backgroundTask) => {
-      backgroundTask = task;
-    });
-
-    await POST(
-      new Request("http://localhost/api/render", {
-        method: "POST",
-        body: JSON.stringify({
-          trend,
-          idea,
-          mediaAssetIds: [assetPath],
-          preference: "shorts",
-          storyboard,
-        }),
-      }),
-    );
-
-    const log = vi.fn().mockResolvedValue(undefined);
-    await backgroundTask?.({ log });
-
-    expect(routeMocks.prisma.mediaAsset.findMany).toHaveBeenCalledWith({
-      where: {
-        userId: "user-1",
-        OR: [
-          {
-            id: {
-              in: [assetPath],
-            },
-          },
-          {
-            path: {
-              in: [assetPath],
-            },
-          },
-        ],
-      },
-      orderBy: { createdAt: "asc" },
-    });
-    expect(routeMocks.renderVideoVariants).toHaveBeenCalledWith(
-      expect.objectContaining({
-        onProgress: expect.any(Function),
-        storyboard: expect.objectContaining({
-          beats: expect.arrayContaining([
-            expect.objectContaining({
-              selectedAssetId: "asset-1",
-              selectedAssetPath: assetPath,
-            }),
-          ]),
-        }),
-      }),
-    );
   });
 });

@@ -16,6 +16,7 @@ type TrendIdeaParams = {
   niche?: string | null;
   tone?: string | null;
   mediaAssets?: UploadedMediaAsset[];
+  creatorMemorySummary?: string | null;
 };
 
 type MediaLedIdeaParams = {
@@ -24,6 +25,7 @@ type MediaLedIdeaParams = {
   niche?: string | null;
   tone?: string | null;
   mediaAssets: UploadedMediaAsset[];
+  creatorMemorySummary?: string | null;
 };
 
 type IdeaGenerationParams = TrendIdeaParams | MediaLedIdeaParams;
@@ -437,6 +439,7 @@ async function generateIdeasFromTrend(params: TrendIdeaParams): Promise<IdeaGene
       guidance: isBridgeTopic
         ? `This trend is not a direct ${nicheLabel} match. Every idea must clearly explain the ${nicheLabel} angle in the title or hook.`
         : `This trend is already a direct ${nicheLabel} match. Keep the ideas tightly focused on that niche.`,
+      creatorMemorySummary: compactText(params.creatorMemorySummary ?? "", 320) || null,
       mediaGuidance: mediaContext
         ? "Use the uploaded media as proof, demo material, or a hook wherever possible. The ideas should feel executable with the current asset library."
         : "No uploaded media context was linked for this idea generation run.",
@@ -487,6 +490,7 @@ async function generateIdeasFromMediaLedInputs(params: MediaLedIdeaParams): Prom
       niche: params.niche,
       tone: params.tone,
       brief: brief || null,
+      creatorMemorySummary: compactText(params.creatorMemorySummary ?? "", 320) || null,
       mediaContext,
       decisionRules: {
         needsBriefWhen: "The uploads do not clearly communicate what this is, how it works, or what the audience should take away without more written context.",
