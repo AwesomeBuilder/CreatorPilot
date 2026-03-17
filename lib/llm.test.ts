@@ -9,6 +9,8 @@ describe("llmChatJSON", () => {
     delete process.env.LLM_MODEL_DEFAULT;
     delete process.env.LLM_MODEL_HARD;
     delete process.env.LLM_IMAGE_MODEL;
+    delete process.env.LLM_TTS_MODEL;
+    delete process.env.LLM_TTS_FALLBACK_MODEL;
     delete process.env.LLM_VIDEO_MODEL;
     delete process.env.LLM_BASE_URL;
   });
@@ -207,6 +209,7 @@ describe("llmChatJSON", () => {
   it("returns a timeout error when speech generation aborts", async () => {
     process.env.LLM_API_KEY = "test-key";
     process.env.LLM_TTS_MODEL = "tts-model";
+    process.env.LLM_TTS_FALLBACK_MODEL = "";
 
     const abortError = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
     const fetchMock = vi.fn().mockRejectedValue(abortError);
@@ -220,6 +223,58 @@ describe("llmChatJSON", () => {
     expect(result.pcmBase64).toBeNull();
     expect(result.error).toBe("Speech generation request timed out for tts-model.");
     expect(result.modelUsed).toBe("tts-model");
+  });
+
+  it("falls back to flash preview TTS when the primary TTS model returns a quota error", async () => {
+    process.env.LLM_API_KEY = "test-key";
+    process.env.LLM_TTS_MODEL = "gemini-2.5-pro-preview-tts";
+    process.env.LLM_TTS_FALLBACK_MODEL = "gemini-2.5-flash-preview-tts";
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "You exceeded your current quota.",
+            },
+          }),
+          { status: 429 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: "audio/pcm;rate=24000",
+                        data: "ZmFsbGJhY2stYXVkaW8=",
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await llmGenerateSpeechDetailed({
+      text: "Narrate this clearly.",
+    });
+
+    expect(result.pcmBase64).toBe("ZmFsbGJhY2stYXVkaW8=");
+    expect(result.modelUsed).toBe("gemini-2.5-flash-preview-tts");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("models/gemini-2.5-pro-preview-tts:generateContent");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("models/gemini-2.5-flash-preview-tts:generateContent");
   });
 
   it("asks the TTS model for a normal conversational pace", async () => {

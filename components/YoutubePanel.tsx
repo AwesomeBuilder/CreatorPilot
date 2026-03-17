@@ -61,12 +61,14 @@ export function YoutubePanel({
   const defaultVariant = variants[0]?.id ?? "";
   const [selectedRenderId, setSelectedRenderId] = useState(defaultVariant);
   const [useSchedule, setUseSchedule] = useState(true);
+  const [previewErrorVariantId, setPreviewErrorVariantId] = useState<string | null>(null);
 
   const effectiveRenderId = variants.some((variant) => variant.id === selectedRenderId)
     ? selectedRenderId
     : defaultVariant;
   const selectedVariant = variants.find((variant) => variant.id === effectiveRenderId) ?? null;
   const renderHasAudio = audioStatus === "generated" || selectedVariant?.hasAudio !== false;
+  const previewError = previewErrorVariantId === selectedVariant?.id;
 
   const canUpload = useMemo(
     () => Boolean(metadata && effectiveRenderId && variants.length > 0 && renderHasAudio),
@@ -137,7 +139,17 @@ export function YoutubePanel({
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-medium text-[var(--cp-ink)]">Preview selected render</p>
-                <p className="truncate text-[11px] text-[var(--cp-muted)]">{selectedVariant.path}</p>
+                <div className="flex items-center gap-3">
+                  <p className="truncate text-[11px] text-[var(--cp-muted)]">{selectedVariant.path}</p>
+                  <a
+                    href={selectedVariant.previewUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 text-[11px] font-medium text-[var(--cp-link)] underline"
+                  >
+                    Open render
+                  </a>
+                </div>
               </div>
               <video
                 key={selectedVariant.id}
@@ -145,7 +157,16 @@ export function YoutubePanel({
                 preload="metadata"
                 className="w-full rounded-lg border border-[var(--cp-border)] bg-black"
                 src={selectedVariant.previewUrl}
+                onError={() =>
+                  setPreviewErrorVariantId(selectedVariant.id)
+                }
+                onLoadedData={() => setPreviewErrorVariantId(null)}
               />
+              {previewError ? (
+                <p className="text-[11px] text-[var(--cp-error)]">
+                  Preview unavailable. This render may have expired, been deleted, or been created before persistent storage was enabled.
+                </p>
+              ) : null}
               <p className={`text-[11px] ${renderHasAudio ? "text-[var(--cp-muted)]" : "text-[var(--cp-error)]"}`}>
                 Audio: {audioStatus === "generated" ? "generated narration included" : renderHasAudio ? "available or unknown" : "missing"}
               </p>

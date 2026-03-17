@@ -94,6 +94,13 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type WaitForJobOptions = {
+  maxAttempts?: number | null;
+  pollIntervalMs?: number;
+  longRunningAfterAttempts?: number;
+  onLongRunning?: () => void;
+};
+
 function assetDisplayName(assetPath: string) {
   return assetPath.split(/[/\\]/).at(-1) ?? assetPath;
 }
@@ -231,8 +238,13 @@ export default function DashboardPage() {
     });
   };
 
-  const waitForJob = async (jobId: string, type: string) => {
-    for (let attempts = 0; attempts < 180; attempts += 1) {
+  const waitForJob = async (jobId: string, type: string, options?: WaitForJobOptions) => {
+    const maxAttempts = options?.maxAttempts === undefined ? 180 : options.maxAttempts;
+    const pollIntervalMs = options?.pollIntervalMs ?? 1500;
+    const longRunningAfterAttempts = options?.longRunningAfterAttempts ?? null;
+    let longRunningNotified = false;
+
+    for (let attempts = 0; maxAttempts === null || attempts < maxAttempts; attempts += 1) {
       const response = await fetch(`/api/jobs/${jobId}`);
       const payload = await response.json();
 
@@ -259,7 +271,12 @@ export default function DashboardPage() {
         throw new Error(typeof outputError === "string" ? outputError : latestLog ?? "Job failed");
       }
 
-      await sleep(1500);
+      if (!longRunningNotified && longRunningAfterAttempts !== null && attempts + 1 >= longRunningAfterAttempts) {
+        longRunningNotified = true;
+        options?.onLongRunning?.();
+      }
+
+      await sleep(pollIntervalMs);
     }
 
     throw new Error("Job timeout");
@@ -493,7 +510,13 @@ export default function DashboardPage() {
     setMessage("Render job started.");
 
     try {
-      const completed = await waitForJob(jobId, "render");
+      const completed = await waitForJob(jobId, "render", {
+        maxAttempts: null,
+        longRunningAfterAttempts: 40,
+        onLongRunning: () => {
+          setMessage("Render is still running. Narration, visual generation, and encoding can take several minutes.");
+        },
+      });
       setLatestRenderJob(completed);
       setMessage("Rendering complete. Generating metadata and schedule...");
       setActiveStep(workflowMode === "trend" ? 4 : 4);
@@ -703,7 +726,13 @@ export default function DashboardPage() {
           storyboard: storyboardResult.storyboard,
         });
 
-        const completedRender = await waitForJob(renderJobId, "render");
+        const completedRender = await waitForJob(renderJobId, "render", {
+          maxAttempts: null,
+          longRunningAfterAttempts: 40,
+          onLongRunning: () => {
+            setMessage("Autopilot render is still running. Narration, visual generation, and encoding can take several minutes.");
+          },
+        });
         setLatestRenderJob(completedRender);
 
         setActiveStep(4);
@@ -802,7 +831,13 @@ export default function DashboardPage() {
         storyboard: storyboardResult.storyboard,
       });
 
-      const completedRender = await waitForJob(renderJobId, "render");
+      const completedRender = await waitForJob(renderJobId, "render", {
+        maxAttempts: null,
+        longRunningAfterAttempts: 40,
+        onLongRunning: () => {
+          setMessage("Autopilot render is still running. Narration, visual generation, and encoding can take several minutes.");
+        },
+      });
       setLatestRenderJob(completedRender);
 
       setActiveStep(4);

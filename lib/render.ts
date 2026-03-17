@@ -1036,12 +1036,14 @@ export async function renderVideoVariants(params: {
   jobId: string;
   title: string;
   storyboard: StoryboardPlan;
+  onProgress?: (message: string) => Promise<void>;
 }): Promise<RenderOutput> {
   await ensureFfmpegInstalled();
   ensureRenderFontsAvailable();
 
   const outputDir = path.join(process.cwd(), "renders", params.userId, params.jobId);
   await ensureDir(outputDir);
+  await params.onProgress?.("Preparing media and layout.");
 
   const resolvedStoryboardResult = await resolveStoryboardAssets({
     userId: params.userId,
@@ -1051,14 +1053,17 @@ export async function renderVideoVariants(params: {
   const resolvedStoryboard = applyStoryboardEditorialTiming(resolvedStoryboardResult.storyboard);
   const layout = layoutForFormat(resolvedStoryboard.format);
   const variants: RenderOutput["variants"] = [];
+  await params.onProgress?.("Generating narration and subtitle timing.");
   const narrationTrack = await buildNarrationTrack({
     userId: params.userId,
     jobId: params.jobId,
     storyboard: resolvedStoryboard,
+    onProgress: params.onProgress,
   });
   const timedStoryboard = narrationTrack.storyboard ?? resolvedStoryboard;
 
   for (let index = 0; index < VARIANT_STYLES.length; index += 1) {
+    await params.onProgress?.(`Compositing variant ${index + 1}/${VARIANT_STYLES.length}.`);
     const style = VARIANT_STYLES[index];
     const tempDir = path.join(outputDir, `tmp-${index + 1}`);
     await ensureDir(tempDir);
@@ -1108,6 +1113,7 @@ export async function renderVideoVariants(params: {
       hasAudio: finalProbe.hasAudio ?? false,
       audioSummary: narrationTrack.audioComposition.summary,
     });
+    await params.onProgress?.(`Variant ${index + 1}/${VARIANT_STYLES.length} complete.`);
   }
 
   return {

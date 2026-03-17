@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { appendJobLog, createJob, runJobInBackground } from "@/lib/jobs";
 import { resolveRequestedMediaAssets } from "@/lib/media-assets";
 import { renderVideoVariants } from "@/lib/render";
+import { persistRenderVariants } from "@/lib/render-storage";
 import { buildStoryboardPlan, StoryboardPlanSchema, storyboardPlanToAssessment } from "@/lib/storyboard";
 import { resolveUser } from "@/lib/user";
 
@@ -31,6 +32,18 @@ const InputSchema = z.object({
   allowIrrelevantMedia: z.boolean().default(false),
   storyboard: StoryboardPlanSchema.optional(),
 });
+
+function routeErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof SyntaxError) {
+    return "Request body must be valid JSON.";
+  }
+
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return fallback;
+}
 
 async function runJobInline<T>(
   jobId: string,
@@ -74,124 +87,136 @@ async function runJobInline<T>(
 }
 
 export async function POST(req: Request) {
-  const parsed = InputSchema.safeParse(await req.json());
+  try {
+    const parsed = InputSchema.safeParse(await req.json());
 
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-  }
-
-  const user = await resolveUser(req);
-
-  const assets = await resolveRequestedMediaAssets({
-    userId: user.id,
-    mediaReferences: parsed.data.mediaAssetIds,
-  });
-
-  if (assets.length === 0) {
-    return NextResponse.json({ error: "No valid media assets found for rendering." }, { status: 400 });
-  }
-
-  const storyboard =
-    parsed.data.storyboard ??
-    (await buildStoryboardPlan({
-      trend: parsed.data.trend,
-      idea: parsed.data.idea,
-      assets: assets.map((asset) => ({
-        id: asset.id,
-        path: asset.path,
-        type: asset.type as "image" | "video",
-      })),
-      preference: parsed.data.preference,
-    }));
-
-  const assessment = storyboardPlanToAssessment(storyboard);
-
-  if (storyboard.shouldBlock && !parsed.data.allowIrrelevantMedia) {
-    return NextResponse.json(
-      {
-        error: storyboard.coverageSummary,
-        assessment,
-        storyboard,
-      },
-      { status: 400 },
-    );
-  }
-
-  const selectedAssetIds = new Set(assets.map((asset) => asset.id));
-  const userBeatAssetIds = storyboard.beats
-    .map((beat) => beat.selectedAssetId)
-    .filter((assetId): assetId is string => typeof assetId === "string" && assetId.length > 0);
-
-  if (userBeatAssetIds.some((assetId) => !selectedAssetIds.has(assetId))) {
-    return NextResponse.json({ error: "Storyboard references media that is not part of the selected assets." }, { status: 400 });
-  }
-
-  const job = await createJob({
-    userId: user.id,
-    type: "render",
-    logs: ["Queued render job."],
-  });
-
-  const task = async ({ log }: { log: (message: string) => Promise<void> }) => {
-    await log("Resolving storyboard coverage.");
-    await log(`Rendering ${storyboard.beats.length} storyboard beats.`);
-    if (storyboard.generatedSupportUsed) {
-      await log("Some beats will use generated supporting visuals.");
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
 
-    const output = await renderVideoVariants({
+    const user = await resolveUser(req);
+
+    const assets = await resolveRequestedMediaAssets({
       userId: user.id,
-      jobId: job.id,
-      title: parsed.data.idea.videoTitle,
-      storyboard,
+      mediaReferences: parsed.data.mediaAssetIds,
     });
 
-    await log(`Render format chosen: ${output.format}.`);
-    if ((output.generatedVideoBeatCount ?? 0) > 0) {
-      await log(`Generated ${output.generatedVideoBeatCount} Veo support clip${output.generatedVideoBeatCount === 1 ? "" : "s"} for uncovered beats.`);
+    if (assets.length === 0) {
+      return NextResponse.json({ error: "No valid media assets found for rendering." }, { status: 400 });
     }
-    if ((output.generatedVideoFailureCount ?? 0) > 0) {
-      await log(
-        `Veo clip generation fell back to still support for ${output.generatedVideoFailureCount} beat${output.generatedVideoFailureCount === 1 ? "" : "s"}.`,
+
+    const storyboard =
+      parsed.data.storyboard ??
+      (await buildStoryboardPlan({
+        trend: parsed.data.trend,
+        idea: parsed.data.idea,
+        assets: assets.map((asset) => ({
+          id: asset.id,
+          path: asset.path,
+          type: asset.type as "image" | "video",
+        })),
+        preference: parsed.data.preference,
+      }));
+
+    const assessment = storyboardPlanToAssessment(storyboard);
+
+    if (storyboard.shouldBlock && !parsed.data.allowIrrelevantMedia) {
+      return NextResponse.json(
+        {
+          error: storyboard.coverageSummary,
+          assessment,
+          storyboard,
+        },
+        { status: 400 },
       );
     }
-    await log(
-      output.audioStatus === "generated"
-        ? output.audioComposition?.summary ?? "Generated narration/audio track for the render."
-        : `Render completed without narration/audio. ${output.audioError ?? ""}`.trim(),
-    );
 
-    await prisma.$transaction(
-      output.variants.map((variant) =>
-        prisma.render.create({
-          data: {
-            userId: user.id,
-            jobId: job.id,
-            variantIndex: variant.variantIndex,
-            path: variant.path,
-            duration: variant.duration,
-          },
-        }),
-      ),
-    );
+    const selectedAssetIds = new Set(assets.map((asset) => asset.id));
+    const userBeatAssetIds = storyboard.beats
+      .map((beat) => beat.selectedAssetId)
+      .filter((assetId): assetId is string => typeof assetId === "string" && assetId.length > 0);
 
-    await log(`Generated ${output.variants.length} render variants.`);
+    if (userBeatAssetIds.some((assetId) => !selectedAssetIds.has(assetId))) {
+      return NextResponse.json({ error: "Storyboard references media that is not part of the selected assets." }, { status: 400 });
+    }
 
-    return output;
-  };
+    const job = await createJob({
+      userId: user.id,
+      type: "render",
+      logs: ["Queued render job."],
+    });
 
-  if (process.env.RUN_RENDER_JOBS_INLINE === "true") {
-    const status = await runJobInline(job.id, task);
+    const task = async ({ log }: { log: (message: string) => Promise<void> }) => {
+      await log("Resolving storyboard coverage.");
+      await log(`Rendering ${storyboard.beats.length} storyboard beats.`);
+      if (storyboard.generatedSupportUsed) {
+        await log("Some beats will use generated supporting visuals.");
+      }
+
+      const output = await renderVideoVariants({
+        userId: user.id,
+        jobId: job.id,
+        title: parsed.data.idea.videoTitle,
+        storyboard,
+        onProgress: log,
+      });
+      output.variants = await persistRenderVariants({
+        userId: user.id,
+        jobId: job.id,
+        variants: output.variants,
+      });
+
+      await log(`Render format chosen: ${output.format}.`);
+      if ((output.generatedVideoBeatCount ?? 0) > 0) {
+        await log(`Generated ${output.generatedVideoBeatCount} Veo support clip${output.generatedVideoBeatCount === 1 ? "" : "s"} for uncovered beats.`);
+      }
+      if ((output.generatedVideoFailureCount ?? 0) > 0) {
+        await log(
+          `Veo clip generation fell back to still support for ${output.generatedVideoFailureCount} beat${output.generatedVideoFailureCount === 1 ? "" : "s"}.`,
+        );
+      }
+      await log(
+        output.audioStatus === "generated"
+          ? output.audioComposition?.summary ?? "Generated narration/audio track for the render."
+          : `Render completed without narration/audio. ${output.audioError ?? ""}`.trim(),
+      );
+
+      await prisma.$transaction(
+        output.variants.map((variant) =>
+          prisma.render.create({
+            data: {
+              userId: user.id,
+              jobId: job.id,
+              variantIndex: variant.variantIndex,
+              path: variant.path,
+              duration: variant.duration,
+            },
+          }),
+        ),
+      );
+
+      await log(`Generated ${output.variants.length} render variants.`);
+
+      return output;
+    };
+
+    if (process.env.RUN_RENDER_JOBS_INLINE === "true") {
+      const status = await runJobInline(job.id, task);
+      return NextResponse.json({
+        jobId: job.id,
+        status,
+      });
+    }
+
+    runJobInBackground(job.id, task);
+
     return NextResponse.json({
       jobId: job.id,
-      status,
+      status: job.status,
     });
+  } catch (error) {
+    console.error("POST /api/render failed", error);
+    const status = error instanceof SyntaxError ? 400 : 500;
+    return NextResponse.json({ error: routeErrorMessage(error, "Failed to start render.") }, { status });
   }
-
-  runJobInBackground(job.id, task);
-
-  return NextResponse.json({
-    jobId: job.id,
-    status: job.status,
-  });
 }

@@ -214,12 +214,15 @@ LLM_MODEL="gemini-2.5-pro"
 LLM_MODEL_HARD="gemini-3.1-pro-preview"
 LLM_IMAGE_MODEL="gemini-3.1-flash-image-preview"
 LLM_TTS_MODEL="gemini-2.5-pro-preview-tts"
+LLM_TTS_FALLBACK_MODEL="gemini-2.5-flash-preview-tts"
 LLM_VIDEO_MODEL="veo-3.1-fast-generate-preview"
 LLM_TTS_VOICE="Kore"
 LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
 ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS="true"
 ENABLE_GENERATED_SUPPORT_MEDIA="true"
 GENERATED_SUPPORT_MEDIA_MODE="video"
+RUN_RENDER_JOBS_INLINE="false"
+RENDER_STORAGE_BUCKET=""
 RENDER_BACKGROUND_MUSIC_PATH=""
 RENDER_BACKGROUND_MUSIC_GAIN_DB="-22"
 RENDER_BACKGROUND_MUSIC_DUCK_DB="14"
@@ -305,12 +308,14 @@ export LLM_MODEL="gemini-2.5-pro"
 export LLM_MODEL_HARD="gemini-3.1-pro-preview"
 export LLM_IMAGE_MODEL="gemini-3.1-flash-image-preview"
 export LLM_TTS_MODEL="gemini-2.5-pro-preview-tts"
+export LLM_TTS_FALLBACK_MODEL="gemini-2.5-flash-preview-tts"
 export LLM_VIDEO_MODEL="veo-3.1-fast-generate-preview"
 export LLM_TTS_VOICE="Kore"
 export LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
 export ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS="true"
 export ENABLE_GENERATED_SUPPORT_MEDIA="true"
 export GENERATED_SUPPORT_MEDIA_MODE="video"
+export RENDER_STORAGE_BUCKET="YOUR_RENDER_BUCKET"
 export YOUTUBE_UPLOAD_MOCK="true"
 
 # Optional for live YouTube OAuth
@@ -320,7 +325,7 @@ export APP_BASE_URL="https://YOUR_CLOUD_RUN_URL"
 export GOOGLE_REDIRECT_URI="https://YOUR_CLOUD_RUN_URL/api/youtube/callback"
 ```
 
-For a first deploy, `APP_BASE_URL` and `GOOGLE_REDIRECT_URI` can be omitted. The deploy script can infer them after the Cloud Run URL is known.
+For a first deploy, `APP_BASE_URL` and `GOOGLE_REDIRECT_URI` can be omitted. The deploy script can infer them after the Cloud Run URL is known. Set `RENDER_STORAGE_BUCKET` to a writable Google Cloud Storage bucket if you want renders to survive Cloud Run revisions and instance restarts.
 
 ### Deploy
 
@@ -359,6 +364,8 @@ Default behavior:
 - Storyboard falls back to heuristics: check `LLM_API_KEY` and `ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS`
 - Generated support media is missing: check `ENABLE_GENERATED_SUPPORT_MEDIA`, `GENERATED_SUPPORT_MEDIA_MODE`, and model access
 - Narration is missing from a render: verify `LLM_TTS_MODEL`, `LLM_TTS_VOICE`, and `LLM_API_KEY`
+- Narration hits `gemini-2.5-pro-preview-tts` quota limits: set `LLM_TTS_FALLBACK_MODEL=gemini-2.5-flash-preview-tts` or confirm billing/quota in Google AI Studio
+- Old render previews disappear after a deploy: set `RENDER_STORAGE_BUCKET` so finished variants are copied to Cloud Storage instead of local Cloud Run disk
 - OAuth callback error: verify `GOOGLE_REDIRECT_URI` and the OAuth app redirect URI match exactly
 - Google shows "app hasn't been verified": keep the OAuth app in Testing mode, add your Google account as a test user, then continue via Advanced for local/dev testing
 - Upload stays in mock mode unexpectedly: check `YOUTUBE_UPLOAD_MOCK` and the OAuth env vars

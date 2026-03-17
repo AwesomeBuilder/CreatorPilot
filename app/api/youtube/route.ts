@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { probeMedia } from "@/lib/ffmpeg";
 import { createJob, runJobInBackground } from "@/lib/jobs";
+import { withLocalRenderPath } from "@/lib/render-storage";
 import { resolveUser } from "@/lib/user";
 import { getYoutubeAuthUrl, getYoutubeConnectionStatus, uploadVideoToYoutube } from "@/lib/youtube";
 
@@ -64,7 +65,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No render file was provided." }, { status: 400 });
   }
 
-  const renderProbe = await probeMedia(resolvedPath);
+  const renderProbe = await withLocalRenderPath(resolvedPath, async (localPath) => probeMedia(localPath));
   if (!renderProbe.hasAudio) {
     return NextResponse.json(
       { error: "This render has no audio track. Generate narration/audio before uploading to YouTube." },
@@ -81,14 +82,16 @@ export async function POST(req: Request) {
   runJobInBackground(job.id, async ({ log }) => {
     await log("Uploading rendered video to YouTube.");
 
-    const result = await uploadVideoToYoutube({
-      userId: user.id,
-      videoPath: resolvedPath,
-      title: parsed.data.title,
-      description: parsed.data.description,
-      tags: parsed.data.tags,
-      publishAt: parsed.data.publishAt,
-    });
+    const result = await withLocalRenderPath(resolvedPath, async (localPath) =>
+      uploadVideoToYoutube({
+        userId: user.id,
+        videoPath: localPath,
+        title: parsed.data.title,
+        description: parsed.data.description,
+        tags: parsed.data.tags,
+        publishAt: parsed.data.publishAt,
+      }),
+    );
 
     await log(`Upload finished in ${result.mode} mode.`);
     return result;

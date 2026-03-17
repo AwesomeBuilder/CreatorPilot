@@ -387,6 +387,7 @@ describe("POST /api/render", () => {
       userId: "user-1",
       jobId: "job-1",
       title: idea.videoTitle,
+      onProgress: expect.any(Function),
       storyboard: expect.objectContaining({
         ...storyboard,
         beats: expect.arrayContaining(
@@ -487,6 +488,7 @@ describe("POST /api/render", () => {
       userId: "user-1",
       jobId: "job-1",
       title: idea.videoTitle,
+      onProgress: expect.any(Function),
       storyboard: expect.objectContaining({
         ...storyboard,
         beats: expect.arrayContaining(
@@ -499,6 +501,39 @@ describe("POST /api/render", () => {
         ),
       }),
     });
+  });
+
+  it("returns JSON when an unexpected render error is thrown", async () => {
+    const storyboard = makeStoryboard();
+
+    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: "/tmp/input-a.mp4", type: "video" }]);
+    routeMocks.storyboardPlanToAssessment.mockReturnValue({
+      status: "relevant",
+      confidence: 0.82,
+      summary: storyboard.coverageSummary,
+      matchedSignals: ["workflow", "creator"],
+      shouldBlock: false,
+      coverageScore: 78,
+      requiresGeneratedSupport: false,
+    });
+    routeMocks.createJob.mockRejectedValue(new Error("upstream request timeout"));
+
+    const response = await POST(
+      new Request("http://localhost/api/render", {
+        method: "POST",
+        body: JSON.stringify({
+          trend,
+          idea,
+          mediaAssetIds: ["asset-1"],
+          preference: "shorts",
+          storyboard,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "upstream request timeout" });
   });
 
   it("resolves render assets when the request sends stored media paths", async () => {
@@ -609,6 +644,7 @@ describe("POST /api/render", () => {
     });
     expect(routeMocks.renderVideoVariants).toHaveBeenCalledWith(
       expect.objectContaining({
+        onProgress: expect.any(Function),
         storyboard: expect.objectContaining({
           beats: expect.arrayContaining([
             expect.objectContaining({

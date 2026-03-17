@@ -130,6 +130,35 @@ function normalizeSelectedAssetIds(params: {
   return params.emptySelectionUsesAllAssets ? params.assets.map((asset) => asset.id) : [];
 }
 
+function summarizeResponseBody(text: string) {
+  return text
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 220);
+}
+
+async function readApiPayload(response: Response): Promise<Record<string, unknown>> {
+  const text = await response.text();
+
+  if (!text) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : { value: parsed };
+  } catch {
+    return {
+      error: summarizeResponseBody(text) || `Request failed with HTTP ${response.status}.`,
+    };
+  }
+}
+
+function apiErrorMessage(data: Record<string, unknown>, fallback: string) {
+  return typeof data.error === "string" && data.error.trim().length > 0 ? data.error : fallback;
+}
+
 export function RenderPanel({
   trend,
   idea,
@@ -216,12 +245,17 @@ export function RenderPanel({
         }),
       });
 
-      const data = await response.json();
+      const data = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(data.error ?? "Failed to analyze coverage");
+        throw new Error(apiErrorMessage(data, "Failed to analyze coverage"));
       }
 
-      setStoryboard(data.storyboard ?? null);
+      const nextStoryboard = (data.storyboard as StoryboardPlan | null | undefined) ?? null;
+      if (!nextStoryboard) {
+        throw new Error(apiErrorMessage(data, "Failed to analyze coverage"));
+      }
+
+      setStoryboard(nextStoryboard);
       setAnalysisKey(currentKey);
     } catch (analysisError) {
       setStoryboard(null);
@@ -265,12 +299,17 @@ export function RenderPanel({
         }),
       });
 
-      const data = await response.json();
+      const data = await readApiPayload(response);
       if (!response.ok) {
-        throw new Error(data.error ?? "Render failed to start");
+        throw new Error(apiErrorMessage(data, "Render failed to start"));
       }
 
-      onJobCreated(data.jobId);
+      const jobId = typeof data.jobId === "string" ? data.jobId : null;
+      if (!jobId) {
+        throw new Error(apiErrorMessage(data, "Render failed to start"));
+      }
+
+      onJobCreated(jobId);
     } catch (renderError) {
       setError(renderError instanceof Error ? renderError.message : "Render failed to start");
     } finally {

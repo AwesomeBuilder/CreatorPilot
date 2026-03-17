@@ -5,6 +5,7 @@ const DEFAULT_MODEL = "gemini-2.5-pro";
 const DEFAULT_HARD_MODEL = "gemini-3.1-pro-preview";
 const DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 const DEFAULT_TTS_MODEL = "gemini-2.5-pro-preview-tts";
+const DEFAULT_TTS_FALLBACK_MODEL = "gemini-2.5-flash-preview-tts";
 const DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview";
 const DEFAULT_TTS_VOICE = "Kore";
 const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
@@ -151,6 +152,10 @@ function resolveModels() {
   const hardModel = process.env.LLM_MODEL_HARD ?? DEFAULT_HARD_MODEL;
   const imageModel = process.env.LLM_IMAGE_MODEL ?? DEFAULT_IMAGE_MODEL;
   const ttsModel = process.env.LLM_TTS_MODEL ?? DEFAULT_TTS_MODEL;
+  const ttsFallbackModel =
+    process.env.LLM_TTS_FALLBACK_MODEL === ""
+      ? null
+      : process.env.LLM_TTS_FALLBACK_MODEL ?? DEFAULT_TTS_FALLBACK_MODEL;
   const videoModel = process.env.LLM_VIDEO_MODEL ?? DEFAULT_VIDEO_MODEL;
   const ttsVoice = process.env.LLM_TTS_VOICE ?? DEFAULT_TTS_VOICE;
   return {
@@ -158,6 +163,7 @@ function resolveModels() {
     hardModel,
     imageModel,
     ttsModel,
+    ttsFallbackModel,
     videoModel,
     ttsVoice,
   };
@@ -691,82 +697,117 @@ export async function llmGenerateSpeechDetailed(params: {
     };
   }
 
-  const { ttsModel, ttsVoice } = resolveModels();
+  const { ttsModel, ttsFallbackModel, ttsVoice } = resolveModels();
+  const candidateModels = [ttsModel, ttsFallbackModel].filter((model, index, models): model is string => Boolean(model) && models.indexOf(model) === index);
+  const attemptErrors: string[] = [];
 
-  try {
-    const response = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ttsModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: `Say this in a clear, natural, professional voice at a normal conversational pace. Do not rush, compress, or speed up the delivery. Script: ${params.text}`,
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: ttsVoice,
+  const generateSpeechWithModel = async (model: string): Promise<LlmSpeechResult> => {
+    try {
+      const response = await fetchWithTimeout(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `Say this in a clear, natural, professional voice at a normal conversational pace. Do not rush, compress, or speed up the delivery. Script: ${params.text}`,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: ttsVoice,
+                  },
                 },
               },
             },
-          },
+          }),
+        },
+        DEFAULT_MEDIA_TIMEOUT_MS,
+      );
+
+      if (!response.ok) {
+        return {
+          pcmBase64: null,
+          mimeType: null,
+          error: extractApiError(await readResponseText(response), response.status, model),
+          modelUsed: model,
+        };
+      }
+
+      const json = GeminiGenerateContentResponseSchema.parse(await response.json());
+      const parts = json.candidates.flatMap((candidate) => candidate.content?.parts ?? []);
+      const audioPart = parts.find(
+        (part) => typeof part.inlineData?.data === "string" && String(part.inlineData?.mimeType ?? "").startsWith("audio/"),
+      );
+
+      if (!audioPart?.inlineData?.data) {
+        return {
+          pcmBase64: null,
+          mimeType: null,
+          error: `Model ${model} did not return audio data.`,
+          modelUsed: model,
+        };
+      }
+
+      return {
+        pcmBase64: audioPart.inlineData.data,
+        mimeType: audioPart.inlineData.mimeType ?? null,
+        error: null,
+        modelUsed: model,
+      };
+    } catch (error) {
+      return {
+        pcmBase64: null,
+        mimeType: null,
+        error: describeRequestFailure({
+          error,
+          action: "Speech generation request",
+          model,
+          fallback: `Speech generation request failed for ${model}.`,
         }),
-      },
-      DEFAULT_MEDIA_TIMEOUT_MS,
-    );
-
-    if (!response.ok) {
-      return {
-        pcmBase64: null,
-        mimeType: null,
-        error: extractApiError(await readResponseText(response), response.status, ttsModel),
-        modelUsed: ttsModel,
+        modelUsed: model,
       };
     }
+  };
 
-    const json = GeminiGenerateContentResponseSchema.parse(await response.json());
-    const parts = json.candidates.flatMap((candidate) => candidate.content?.parts ?? []);
-    const audioPart = parts.find((part) => typeof part.inlineData?.data === "string" && String(part.inlineData?.mimeType ?? "").startsWith("audio/"));
-
-    if (!audioPart?.inlineData?.data) {
-      return {
-        pcmBase64: null,
-        mimeType: null,
-        error: `Model ${ttsModel} did not return audio data.`,
-        modelUsed: ttsModel,
-      };
+  for (const model of candidateModels) {
+    const result = await generateSpeechWithModel(model);
+    if (result.pcmBase64) {
+      return result;
     }
 
-    return {
-      pcmBase64: audioPart.inlineData.data,
-      mimeType: audioPart.inlineData.mimeType ?? null,
-      error: null,
-      modelUsed: ttsModel,
-    };
-  } catch (error) {
+    if (result.error) {
+      attemptErrors.push(result.error);
+    }
+  }
+
+  const lastModel = candidateModels.at(-1) ?? ttsModel;
+  const lastError = attemptErrors.at(-1) ?? `Speech generation request failed for ${lastModel}.`;
+  if (attemptErrors.length <= 1) {
     return {
       pcmBase64: null,
       mimeType: null,
-      error: describeRequestFailure({
-        error,
-        action: "Speech generation request",
-        model: ttsModel,
-        fallback: `Speech generation request failed for ${ttsModel}.`,
-      }),
-      modelUsed: ttsModel,
+      error: lastError,
+      modelUsed: lastModel,
     };
   }
+
+  return {
+    pcmBase64: null,
+    mimeType: null,
+    error: `${attemptErrors[0]} Fallback ${lastModel} also failed: ${lastError}`,
+    modelUsed: lastModel,
+  };
 }
 
 export async function llmGenerateVideoDetailed(params: {

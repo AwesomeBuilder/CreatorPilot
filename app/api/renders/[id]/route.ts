@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
-import { createRangedFileResponse } from "@/lib/ranged-file-response";
+import { createStoredRenderResponse } from "@/lib/render-storage";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
@@ -32,7 +32,7 @@ async function respondWithRender(req: Request, context: Params, includeBody: boo
   }
 
   try {
-    return await createRangedFileResponse({
+    return await createStoredRenderResponse({
       req,
       filePath: render.path,
       contentType: "video/mp4",

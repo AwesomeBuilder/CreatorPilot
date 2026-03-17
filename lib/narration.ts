@@ -298,6 +298,7 @@ export async function buildNarrationTrack(params: {
   userId: string;
   jobId: string;
   storyboard: StoryboardPlan;
+  onProgress?: (message: string) => Promise<void>;
 }) {
   const storyboard = applyStoryboardEditorialTiming(params.storyboard);
 
@@ -355,6 +356,7 @@ export async function buildNarrationTrack(params: {
     const rawSegmentPath = path.join(outputDir, `${beat.beatId}.raw.wav`);
     const fittedSegmentPath = path.join(outputDir, `${beat.beatId}.wav`);
     const narrationText = beat.narration.trim();
+    await params.onProgress?.(`Narration beat ${beat.order}/${storyboard.beats.length}: ${beat.title}`);
 
     if (!narrationText) {
       await createSilenceSegment(fittedSegmentPath, beat.durationSeconds);
@@ -470,6 +472,7 @@ export async function buildNarrationTrack(params: {
 
   const narrationPath = path.join(outputDir, "narration.wav");
   await concatAudioSegments(segmentPaths, narrationPath);
+  await params.onProgress?.("Narration track assembled.");
 
   let finalAudioPath = narrationPath;
   const composition: RenderAudioComposition = {
@@ -520,6 +523,7 @@ export async function buildNarrationTrack(params: {
       });
       finalAudioPath = mixedMusicPath;
       composition.backgroundMusic.status = "mixed";
+      await params.onProgress?.("Background music mixed into narration.");
     } catch (error) {
       composition.backgroundMusic.status = "unavailable";
       composition.backgroundMusic.error =
@@ -560,6 +564,7 @@ export async function buildNarrationTrack(params: {
         composition.transitionSfx.status = "mixed";
         composition.transitionSfx.eventCount = eventTimes.length;
         composition.transitionSfx.error = null;
+        await params.onProgress?.("Transition SFX layered onto narration.");
       } catch (error) {
         composition.transitionSfx.status = "unavailable";
         composition.transitionSfx.error =

@@ -27,42 +27,60 @@ const InputSchema = z.object({
   preference: z.enum(["auto", "shorts", "landscape"]).default("auto"),
 });
 
+function routeErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof SyntaxError) {
+    return "Request body must be valid JSON.";
+  }
+
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
 export async function POST(req: Request) {
-  const parsed = InputSchema.safeParse(await req.json());
+  try {
+    const parsed = InputSchema.safeParse(await req.json());
 
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    }
+
+    const user = await resolveUser(req);
+
+    const assets = await resolveRequestedMediaAssets({
+      userId: user.id,
+      mediaReferences: parsed.data.mediaAssetIds,
+    });
+
+    if (assets.length === 0) {
+      return NextResponse.json({ error: "No valid media assets found for storyboarding." }, { status: 400 });
+    }
+
+    const baseStoryboard = await buildStoryboardPlan({
+      trend: parsed.data.trend,
+      idea: parsed.data.idea,
+      assets: assets.map((asset) => ({
+        id: asset.id,
+        path: asset.path,
+        type: asset.type as "image" | "video",
+      })),
+      preference: parsed.data.preference,
+    });
+    const storyboard = await hydrateStoryboardGeneratedPreviews({
+      userId: user.id,
+      scopeId: `storyboard-${Date.now()}`,
+      storyboard: baseStoryboard,
+    });
+
+    return NextResponse.json({
+      storyboard,
+      assessment: storyboardPlanToAssessment(storyboard),
+    });
+  } catch (error) {
+    console.error("POST /api/storyboard failed", error);
+    const status = error instanceof SyntaxError ? 400 : 500;
+    return NextResponse.json({ error: routeErrorMessage(error, "Failed to analyze coverage.") }, { status });
   }
-
-  const user = await resolveUser(req);
-
-  const assets = await resolveRequestedMediaAssets({
-    userId: user.id,
-    mediaReferences: parsed.data.mediaAssetIds,
-  });
-
-  if (assets.length === 0) {
-    return NextResponse.json({ error: "No valid media assets found for storyboarding." }, { status: 400 });
-  }
-
-  const baseStoryboard = await buildStoryboardPlan({
-    trend: parsed.data.trend,
-    idea: parsed.data.idea,
-    assets: assets.map((asset) => ({
-      id: asset.id,
-      path: asset.path,
-      type: asset.type as "image" | "video",
-    })),
-    preference: parsed.data.preference,
-  });
-  const storyboard = await hydrateStoryboardGeneratedPreviews({
-    userId: user.id,
-    scopeId: `storyboard-${Date.now()}`,
-    storyboard: baseStoryboard,
-  });
-
-  return NextResponse.json({
-    storyboard,
-    assessment: storyboardPlanToAssessment(storyboard),
-  });
 }

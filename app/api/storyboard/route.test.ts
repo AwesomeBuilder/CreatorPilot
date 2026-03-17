@@ -398,4 +398,34 @@ describe("POST /api/storyboard", () => {
       }),
     );
   });
+
+  it("returns JSON when an unexpected storyboard error is thrown", async () => {
+    routeMocks.resolveUser.mockResolvedValue({ id: "user-1" });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([{ id: "asset-1", path: "/tmp/input.png", type: "image" }]);
+    routeMocks.buildStoryboardPlan.mockRejectedValue(new Error("upstream request timeout"));
+
+    const response = await POST(
+      new Request("http://localhost/api/storyboard", {
+        method: "POST",
+        body: JSON.stringify({
+          trend: {
+            trendTitle: "OpenAI update",
+            summary: "Summary",
+            links: [],
+          },
+          idea: {
+            videoTitle: "Idea",
+            hook: "Hook",
+            bulletOutline: [],
+            cta: "CTA",
+          },
+          mediaAssetIds: ["asset-1"],
+          preference: "shorts",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "upstream request timeout" });
+  });
 });
