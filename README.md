@@ -94,6 +94,26 @@ Memory + Tools + Runtime
 - Diagram source: `npm run diagram:architecture` regenerates `docs/architecture/creator-pilot-architecture.svg` and `docs/architecture/creator-pilot-architecture.jpg`.
 - Full architecture notes, gap analysis, and phased migration plan: `docs/architecture/creator-pilot-multi-agent-architecture.md`.
 
+## Agent Model
+
+- `Orchestrator Agent` in `lib/agents/orchestrator.ts` is the workflow controller. It owns shared workflow state and delegates to specialist agents through `runTrendDiscoveryWorkflow()`, `runIdeaWorkflow()`, `runStoryboardWorkflow()`, `runRenderWorkflow()`, `runMetadataWorkflow()`, and `runPublishingWorkflow()`.
+- `Profile / Memory Agent` loads creator profile, enabled sources, recent renders, and recent publishing outputs from Prisma so later steps can use existing context instead of treating every run as stateless.
+- `Trend Discovery Agent` wraps RSS source sync, feed fetch, clustering, and trend ranking. It maps directly onto the existing `lib/rss.ts`, `lib/trends.ts`, and `lib/default-sources.ts` logic.
+- `Ideation Agent` wraps `lib/ideas.ts` and now receives `creatorMemorySummary`, so idea generation can reference creator preferences and recent outputs.
+- `Media Selection Agent` resolves uploaded assets from IDs or stored paths before storyboarding or rendering.
+- `Storyboard Agent` wraps `lib/storyboard.ts` and owns coverage analysis, generated preview hydration, and render gating.
+- `Render Agent` wraps `lib/render.ts`, `lib/narration.ts`, `lib/ffmpeg.ts`, and `lib/render-storage.ts` to produce persisted render variants.
+- `Metadata Agent` wraps `lib/metadata.ts` and `lib/schedule.ts` to generate titles, descriptions, tags, and a publish-time recommendation.
+- `Publishing Agent` wraps stored-render resolution plus `lib/youtube.ts` to validate audio and upload in live or mock mode.
+- `Agent Tools` live in `lib/agents/tools.ts`. They provide a thin abstraction over Prisma, RSS sources, Gemini/Veo APIs, FFmpeg/ffprobe, the YouTube Data API, and local asset storage without introducing new infrastructure.
+- Route handlers are now the entrypoints into the agent system:
+  `/api/trends` -> trend discovery workflow
+  `/api/ideas` -> idea workflow
+  `/api/storyboard` -> storyboard workflow
+  `/api/render` -> storyboard preflight + render workflow
+  `/api/metadata` -> metadata workflow
+  `/api/youtube` -> publishing workflow
+
 ## Project Structure
 
 ```text
@@ -122,6 +142,17 @@ app/
 components/
 lib/
   agents/
+    base-agent.ts
+    tools.ts
+    orchestrator.ts
+    memory-agent.ts
+    trend-agent.ts
+    ideation-agent.ts
+    media-selection-agent.ts
+    storyboard-agent.ts
+    render-agent.ts
+    metadata-agent.ts
+    publishing-agent.ts
 prisma/
 scripts/
 uploads/
