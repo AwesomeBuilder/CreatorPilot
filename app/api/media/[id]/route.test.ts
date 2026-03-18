@@ -11,6 +11,8 @@ const routeMocks = vi.hoisted(() => ({
     },
   },
   resolveUser: vi.fn(),
+  deleteStoredFile: vi.fn(),
+  isCloudStoragePath: vi.fn((filePath: string) => filePath.startsWith("gs://")),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -20,6 +22,16 @@ vi.mock("@/lib/db", () => ({
 vi.mock("@/lib/user", () => ({
   resolveUser: routeMocks.resolveUser,
 }));
+
+vi.mock("@/lib/storage", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/storage")>("@/lib/storage");
+
+  return {
+    ...actual,
+    deleteStoredFile: routeMocks.deleteStoredFile,
+    isCloudStoragePath: routeMocks.isCloudStoragePath,
+  };
+});
 
 import { DELETE } from "@/app/api/media/[id]/route";
 
@@ -32,6 +44,8 @@ describe("DELETE /api/media/[id]", () => {
     routeMocks.prisma.mediaAsset.findFirst.mockReset();
     routeMocks.prisma.mediaAsset.delete.mockReset();
     routeMocks.resolveUser.mockReset();
+    routeMocks.deleteStoredFile.mockReset();
+    routeMocks.isCloudStoragePath.mockImplementation((filePath: string) => filePath.startsWith("gs://"));
   });
 
   afterEach(async () => {
@@ -63,9 +77,16 @@ describe("DELETE /api/media/[id]", () => {
       userId: testUserId,
       path: assetPath,
       type: "image",
+      status: "ready",
+      filename: "sample.png",
+      mimeType: "image/png",
+      sizeBytes: 12,
     });
     routeMocks.prisma.mediaAsset.delete.mockResolvedValue({
       id: "asset-1",
+    });
+    routeMocks.deleteStoredFile.mockImplementation(async (filePath: string) => {
+      await fs.rm(filePath, { force: true });
     });
 
     const response = await DELETE(new Request("http://localhost/api/media/asset-1", { method: "DELETE" }), {
@@ -78,6 +99,10 @@ describe("DELETE /api/media/[id]", () => {
         id: "asset-1",
         path: assetPath,
         type: "image",
+        status: "ready",
+        filename: "sample.png",
+        mimeType: "image/png",
+        sizeBytes: 12,
       },
     });
     await expect(fs.access(assetPath)).rejects.toBeTruthy();
@@ -98,6 +123,10 @@ describe("DELETE /api/media/[id]", () => {
       userId: testUserId,
       path: outsideTestFile,
       type: "image",
+      status: "ready",
+      filename: "outside.txt",
+      mimeType: "text/plain",
+      sizeBytes: 7,
     });
 
     const response = await DELETE(new Request("http://localhost/api/media/asset-1", { method: "DELETE" }), {
@@ -108,5 +137,45 @@ describe("DELETE /api/media/[id]", () => {
     expect(await response.json()).toEqual({ error: "Media asset path is invalid" });
     expect(routeMocks.prisma.mediaAsset.delete).not.toHaveBeenCalled();
     await expect(fs.access(outsideTestFile)).resolves.toBeUndefined();
+  });
+
+  it("allows deleting cloud-backed assets without local path validation", async () => {
+    const cloudPath = "gs://media-bucket/media/test-user-media-delete/asset-1/sample.mp4";
+
+    routeMocks.resolveUser.mockResolvedValue({ id: testUserId });
+    routeMocks.prisma.mediaAsset.findFirst.mockResolvedValue({
+      id: "asset-1",
+      userId: testUserId,
+      path: cloudPath,
+      type: "video",
+      status: "ready",
+      filename: "sample.mp4",
+      mimeType: "video/mp4",
+      sizeBytes: 1024,
+    });
+    routeMocks.deleteStoredFile.mockResolvedValue(undefined);
+
+    const response = await DELETE(new Request("http://localhost/api/media/asset-1", { method: "DELETE" }), {
+      params: Promise.resolve({ id: "asset-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      deleted: {
+        id: "asset-1",
+        path: cloudPath,
+        type: "video",
+        status: "ready",
+        filename: "sample.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 1024,
+      },
+    });
+    expect(routeMocks.deleteStoredFile).toHaveBeenCalledWith(cloudPath, { ignoreMissing: true });
+    expect(routeMocks.prisma.mediaAsset.delete).toHaveBeenCalledWith({
+      where: {
+        id: "asset-1",
+      },
+    });
   });
 });

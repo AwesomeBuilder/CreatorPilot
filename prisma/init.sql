@@ -25,7 +25,12 @@ CREATE TABLE "MediaAsset" (
     "userId" TEXT NOT NULL,
     "path" TEXT NOT NULL,
     "type" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'ready',
+    "filename" TEXT NOT NULL,
+    "mimeType" TEXT NOT NULL,
+    "sizeBytes" BIGINT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "MediaAsset_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -78,6 +83,9 @@ CREATE INDEX "Source_userId_enabled_idx" ON "Source"("userId", "enabled");
 CREATE INDEX "MediaAsset_userId_createdAt_idx" ON "MediaAsset"("userId", "createdAt");
 
 -- CreateIndex
+CREATE INDEX "MediaAsset_userId_status_createdAt_idx" ON "MediaAsset"("userId", "status", "createdAt");
+
+-- CreateIndex
 CREATE INDEX "Job_userId_type_idx" ON "Job"("userId", "type");
 
 -- CreateIndex
@@ -91,4 +99,3 @@ CREATE UNIQUE INDEX "Render_jobId_variantIndex_key" ON "Render"("jobId", "varian
 
 -- CreateIndex
 CREATE UNIQUE INDEX "OAuthCredential_userId_provider_key" ON "OAuthCredential"("userId", "provider");
-

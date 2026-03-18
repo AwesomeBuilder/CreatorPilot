@@ -61,6 +61,17 @@ export type ScheduleRecommendation = {
 export type RenderFormat = "shorts" | "landscape";
 export type RenderPreference = RenderFormat | "auto";
 export type MediaAssetType = "image" | "video";
+export type MediaAssetStatus = "pending" | "ready" | "failed";
+export type MediaUploadMode = "server" | "direct";
+export type MediaAssetRecord = {
+  id: string;
+  path: string;
+  type: MediaAssetType;
+  status: MediaAssetStatus;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number | null;
+};
 export type MediaSourceKind = "user" | "generated" | "synthetic";
 export type CoverageLevel = "strong" | "usable" | "weak" | "missing";
 export type BeatPurpose = "hook" | "context" | "proof" | "explanation" | "takeaway" | "cta";

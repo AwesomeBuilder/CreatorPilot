@@ -33,6 +33,25 @@ export type ProbeResult = {
   hasAudio?: boolean;
 };
 
+export type BinaryInputSource = {
+  inputArgs?: string[];
+  inputPath: string;
+};
+
+function normalizeBinaryInput(input: string | BinaryInputSource): Required<BinaryInputSource> {
+  if (typeof input === "string") {
+    return {
+      inputArgs: [],
+      inputPath: input,
+    };
+  }
+
+  return {
+    inputArgs: input.inputArgs ?? [],
+    inputPath: input.inputPath,
+  };
+}
+
 export async function ensureDir(dirPath: string) {
   await fs.mkdir(dirPath, { recursive: true });
 }
@@ -70,16 +89,19 @@ export async function ensureFfmpegInstalled() {
   await runBinary(FFPROBE_BIN, ["-version"]);
 }
 
-export async function probeMedia(inputPath: string): Promise<ProbeResult> {
+export async function probeMedia(inputPath: string | BinaryInputSource): Promise<ProbeResult> {
+  const input = normalizeBinaryInput(inputPath);
+
   try {
     const { stdout } = await execFileAsync(FFPROBE_BIN, [
       "-v",
       "error",
+      ...input.inputArgs,
       "-show_entries",
       "stream=codec_type,width,height:format=duration",
       "-of",
       "json",
-      inputPath,
+      input.inputPath,
     ]);
 
     const parsed = JSON.parse(stdout) as {

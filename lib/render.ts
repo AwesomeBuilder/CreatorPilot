@@ -8,6 +8,7 @@ import {
 import { ensureDir, ensureFfmpegInstalled, FFMPEG_BIN, isImagePath, probeMedia, runBinary } from "@/lib/ffmpeg";
 import { applyStoryboardEditorialTiming, compactOverlayCopy, sanitizeOverlayText, wrapOverlayText } from "@/lib/editorial";
 import { buildNarrationTrack } from "@/lib/narration";
+import { resolveStoredFileBinaryInput } from "@/lib/storage";
 import type {
   NormalizedCropWindow,
   RenderFormat,
@@ -131,18 +132,33 @@ function escapeFilterValue(value: string) {
 type BeatVisualSource = {
   assetPath: string;
   assetType: StoryboardBeat["assetType"];
+  inputArgs?: string[];
   cropWindow?: NormalizedCropWindow;
   shotStartSeconds?: number;
   shotEndSeconds?: number;
 };
 
-function beatVisualSources(beat: StoryboardBeat): BeatVisualSource[] {
+type ResolvedStoryboardSupportingVisual = StoryboardSupportingVisual & {
+  inputArgs?: string[];
+};
+
+type ResolvedStoryboardBeat = StoryboardBeat & {
+  selectedAssetInputArgs?: string[];
+  supportingVisuals?: ResolvedStoryboardSupportingVisual[];
+};
+
+type ResolvedStoryboardPlan = Omit<StoryboardPlan, "beats"> & {
+  beats: ResolvedStoryboardBeat[];
+};
+
+function beatVisualSources(beat: ResolvedStoryboardBeat): BeatVisualSource[] {
   const visuals: BeatVisualSource[] = [];
 
   if (beat.selectedAssetPath) {
     visuals.push({
       assetPath: beat.selectedAssetPath,
       assetType: beat.assetType,
+      inputArgs: beat.selectedAssetInputArgs,
       cropWindow: beat.cropWindow,
       shotStartSeconds: beat.shotStartSeconds,
       shotEndSeconds: beat.shotEndSeconds,
@@ -157,6 +173,7 @@ function beatVisualSources(beat: StoryboardBeat): BeatVisualSource[] {
     visuals.push({
       assetPath: visual.assetPath,
       assetType: visual.assetType,
+      inputArgs: visual.inputArgs,
       cropWindow: visual.cropWindow,
       shotStartSeconds: visual.shotStartSeconds,
       shotEndSeconds: visual.shotEndSeconds,
@@ -492,6 +509,7 @@ async function createImageSegmentClip(params: {
   await runBinary(FFMPEG_BIN, [
     "-loop",
     "1",
+    ...(params.visual.inputArgs ?? []),
     "-i",
     params.visual.assetPath,
     "-t",
@@ -546,6 +564,7 @@ async function createVideoSegmentClip(params: {
     String(start),
     "-t",
     String(params.inputDuration),
+    ...(params.visual.inputArgs ?? []),
     "-i",
     params.visual.assetPath,
     "-vf",
@@ -571,8 +590,11 @@ async function createVisualSegmentClip(params: {
   style: (typeof VARIANT_STYLES)[number];
   phase: number;
 }) {
-  const isStill = isImagePath(params.visual.assetPath);
-  const probe = await probeMedia(params.visual.assetPath);
+  const isStill = params.visual.assetType === "image" || isImagePath(params.visual.assetPath);
+  const probe = await probeMedia({
+    inputArgs: params.visual.inputArgs,
+    inputPath: params.visual.assetPath,
+  });
   const inputDuration = isStill
     ? params.durationSeconds
     : Math.max(
@@ -842,10 +864,51 @@ async function resolveStoryboardAssets(params: {
   userId: string;
   jobId: string;
   storyboard: StoryboardPlan;
+  tempDir: string;
 }) {
   const beats: StoryboardBeat[] = [];
+  const renderBeats: ResolvedStoryboardBeat[] = [];
   let generatedVideoBeatCount = 0;
   let generatedVideoFailureCount = 0;
+  const binaryInputCache = new Map<string, Awaited<ReturnType<typeof resolveStoredFileBinaryInput>>>();
+
+  const localizePath = async (
+    assetPath: string | null | undefined,
+  ): Promise<Awaited<ReturnType<typeof resolveStoredFileBinaryInput>> | null> => {
+    if (!assetPath) {
+      return null;
+    }
+
+    const cached = binaryInputCache.get(assetPath);
+    if (cached) {
+      return cached;
+    }
+
+    const resolved = await resolveStoredFileBinaryInput(assetPath);
+    binaryInputCache.set(assetPath, resolved);
+    return resolved;
+  };
+
+  const buildRenderBeat = async (beat: StoryboardBeat): Promise<ResolvedStoryboardBeat> => {
+    const localizedSelectedAssetPath = await localizePath(beat.selectedAssetPath);
+    const supportingVisuals: ResolvedStoryboardSupportingVisual[] = [];
+
+    for (const visual of beat.supportingVisuals ?? []) {
+      const localizedVisualPath = await localizePath(visual.assetPath);
+      supportingVisuals.push({
+        ...visual,
+        assetPath: localizedVisualPath?.inputPath ?? null,
+        inputArgs: localizedVisualPath?.inputArgs,
+      });
+    }
+
+    return {
+      ...beat,
+      selectedAssetInputArgs: localizedSelectedAssetPath?.inputArgs,
+      selectedAssetPath: localizedSelectedAssetPath?.inputPath ?? null,
+      supportingVisuals,
+    };
+  };
 
   for (const beat of params.storyboard.beats) {
     if (beat.mediaSource !== "generated" || !beat.generatedVisualPrompt) {
@@ -857,19 +920,20 @@ async function resolveStoryboardAssets(params: {
         }
 
         if (visual.assetPath && existsSync(visual.assetPath)) {
-          supportingVisuals.push({
+          const resolvedVisual: StoryboardSupportingVisual = {
             ...visual,
             generatedVisualStatus: visual.generatedVisualStatus === "planned" ? "generated" : visual.generatedVisualStatus,
             generatedAssetPlan: visual.generatedAssetPlan
               ? {
                   ...visual.generatedAssetPlan,
-                  resolvedKind: isImagePath(visual.assetPath) ? "still" : "motion",
-                  status: "generated",
+                  resolvedKind: isImagePath(visual.assetPath) ? ("still" as const) : ("motion" as const),
+                  status: "generated" as const,
                   assetPath: visual.assetPath,
                   previewPath: visual.generatedPreviewPath ?? visual.generatedAssetPlan.previewPath ?? null,
                 }
-              : visual.generatedAssetPlan,
-          });
+                : visual.generatedAssetPlan,
+          };
+          supportingVisuals.push(resolvedVisual);
           continue;
         }
 
@@ -884,50 +948,53 @@ async function resolveStoryboardAssets(params: {
           allowStillFallback: true,
         });
 
-        supportingVisuals.push(
-          generatedResult.path
-            ? {
-                ...visual,
-                assetPath: generatedResult.path,
-                generatedPreviewPath:
-                  generatedResult.previewPath ?? (isImagePath(generatedResult.path) ? generatedResult.path : visual.generatedPreviewPath ?? null),
-                generatedVisualStatus: "generated",
-                generatedAssetPlan: visual.generatedAssetPlan
-                  ? {
-                      ...visual.generatedAssetPlan,
-                      resolvedKind: generatedResult.resolvedKind ?? (isImagePath(generatedResult.path) ? "still" : "motion"),
-                      status: "generated",
-                      provider: generatedResult.provider,
-                      assetPath: generatedResult.path,
-                      previewPath:
-                        generatedResult.previewPath ??
-                        (isImagePath(generatedResult.path) ? generatedResult.path : visual.generatedPreviewPath ?? null),
-                      fallbackAssetPath: generatedResult.fallbackAssetPath ?? null,
-                      degradedFrom: generatedResult.degradedFrom,
-                      error: generatedResult.error,
-                    }
-                  : visual.generatedAssetPlan,
-              }
-            : {
-                ...visual,
-                assetPath: null,
-                generatedPreviewPath: null,
-                generatedVisualStatus: "unavailable",
-                generatedAssetPlan: visual.generatedAssetPlan
-                  ? {
-                      ...visual.generatedAssetPlan,
-                      status: "unavailable",
-                      error: generatedResult.error,
-                    }
-                  : visual.generatedAssetPlan,
-              },
-        );
+        const resolvedVisual: StoryboardSupportingVisual = generatedResult.path
+          ? {
+              ...visual,
+              assetPath: generatedResult.path,
+              generatedPreviewPath:
+                generatedResult.previewPath ?? (isImagePath(generatedResult.path) ? generatedResult.path : visual.generatedPreviewPath ?? null),
+              generatedVisualStatus: "generated" as const,
+              generatedAssetPlan: visual.generatedAssetPlan
+                ? {
+                    ...visual.generatedAssetPlan,
+                    resolvedKind:
+                      (generatedResult.resolvedKind as "still" | "motion" | undefined) ??
+                      (isImagePath(generatedResult.path) ? ("still" as const) : ("motion" as const)),
+                    status: "generated" as const,
+                    provider: generatedResult.provider,
+                    assetPath: generatedResult.path,
+                    previewPath:
+                      generatedResult.previewPath ??
+                      (isImagePath(generatedResult.path) ? generatedResult.path : visual.generatedPreviewPath ?? null),
+                    fallbackAssetPath: generatedResult.fallbackAssetPath ?? null,
+                    degradedFrom: generatedResult.degradedFrom,
+                    error: generatedResult.error,
+                  }
+                : visual.generatedAssetPlan,
+            }
+          : {
+              ...visual,
+              assetPath: null,
+              generatedPreviewPath: null,
+              generatedVisualStatus: "unavailable" as const,
+              generatedAssetPlan: visual.generatedAssetPlan
+                ? {
+                    ...visual.generatedAssetPlan,
+                    status: "unavailable" as const,
+                    error: generatedResult.error,
+                  }
+                : visual.generatedAssetPlan,
+            };
+        supportingVisuals.push(resolvedVisual);
       }
 
-      beats.push({
+      const canonicalBeat = {
         ...beat,
         supportingVisuals,
-      });
+      };
+      beats.push(canonicalBeat);
+      renderBeats.push(await buildRenderBeat(canonicalBeat));
       continue;
     }
 
@@ -940,6 +1007,7 @@ async function resolveStoryboardAssets(params: {
     generatedVideoBeatCount += resolvedGenerated.generatedVideoBeatCount;
     generatedVideoFailureCount += resolvedGenerated.generatedVideoFailureCount;
     beats.push(resolvedGenerated.beat);
+    renderBeats.push(await buildRenderBeat(resolvedGenerated.beat));
   }
 
   return {
@@ -947,8 +1015,37 @@ async function resolveStoryboardAssets(params: {
       ...params.storyboard,
       beats,
     },
+    renderStoryboard: {
+      ...params.storyboard,
+      beats: renderBeats,
+    },
     generatedVideoBeatCount,
     generatedVideoFailureCount,
+  };
+}
+
+function applyTimedStoryboard(base: StoryboardPlan, timed: StoryboardPlan): StoryboardPlan {
+  const resolvedBase = base as ResolvedStoryboardPlan;
+
+  return {
+    ...timed,
+    beats: timed.beats.map((timedBeat, index) => {
+      const baseBeat = resolvedBase.beats[index] ?? timedBeat;
+      return {
+        ...timedBeat,
+        selectedAssetId: baseBeat.selectedAssetId,
+        selectedAssetInputArgs: "selectedAssetInputArgs" in baseBeat ? baseBeat.selectedAssetInputArgs : undefined,
+        selectedAssetPath: baseBeat.selectedAssetPath,
+        mediaSource: baseBeat.mediaSource,
+        assetType: baseBeat.assetType,
+        cropWindow: baseBeat.cropWindow,
+        shotStartSeconds: baseBeat.shotStartSeconds,
+        shotEndSeconds: baseBeat.shotEndSeconds,
+        supportingVisuals: baseBeat.supportingVisuals,
+        generatedPreviewPath: baseBeat.generatedPreviewPath,
+        generatedAssetPlan: baseBeat.generatedAssetPlan,
+      };
+    }),
   };
 }
 
@@ -1045,22 +1142,28 @@ export async function renderVideoVariants(params: {
   await ensureDir(outputDir);
   await params.onProgress?.("Preparing media and layout.");
 
+  const mediaSourceDir = path.join(outputDir, "sources");
+  await ensureDir(mediaSourceDir);
+
   const resolvedStoryboardResult = await resolveStoryboardAssets({
     userId: params.userId,
     jobId: params.jobId,
     storyboard: applyStoryboardEditorialTiming(params.storyboard),
+    tempDir: mediaSourceDir,
   });
-  const resolvedStoryboard = applyStoryboardEditorialTiming(resolvedStoryboardResult.storyboard);
-  const layout = layoutForFormat(resolvedStoryboard.format);
+  const canonicalStoryboard = applyStoryboardEditorialTiming(resolvedStoryboardResult.storyboard);
+  const renderStoryboard = applyStoryboardEditorialTiming(resolvedStoryboardResult.renderStoryboard) as ResolvedStoryboardPlan;
+  const layout = layoutForFormat(renderStoryboard.format);
   const variants: RenderOutput["variants"] = [];
   await params.onProgress?.("Generating narration and subtitle timing.");
   const narrationTrack = await buildNarrationTrack({
     userId: params.userId,
     jobId: params.jobId,
-    storyboard: resolvedStoryboard,
+    storyboard: canonicalStoryboard,
     onProgress: params.onProgress,
   });
-  const timedStoryboard = narrationTrack.storyboard ?? resolvedStoryboard;
+  const timedStoryboard = narrationTrack.storyboard ?? canonicalStoryboard;
+  const timedRenderStoryboard = applyTimedStoryboard(renderStoryboard, timedStoryboard);
 
   for (let index = 0; index < VARIANT_STYLES.length; index += 1) {
     await params.onProgress?.(`Compositing variant ${index + 1}/${VARIANT_STYLES.length}.`);
@@ -1069,7 +1172,7 @@ export async function renderVideoVariants(params: {
     await ensureDir(tempDir);
 
     const clipPaths: string[] = [];
-    for (const beat of timedStoryboard.beats) {
+    for (const beat of timedRenderStoryboard.beats as ResolvedStoryboardBeat[]) {
       const clipPath = path.join(tempDir, `${beat.beatId}.mp4`);
       await createBeatClip({
         outputPath: clipPath,
@@ -1117,8 +1220,8 @@ export async function renderVideoVariants(params: {
   }
 
   return {
-    format: resolvedStoryboard.format,
-    reason: resolvedStoryboard.coverageSummary,
+    format: renderStoryboard.format,
+    reason: renderStoryboard.coverageSummary,
     variants,
     audioStatus: narrationTrack.path ? "generated" : "missing",
     audioError: narrationTrack.path ? narrationTrack.error : narrationTrack.error ?? "Generated narration was unavailable.",
@@ -1136,4 +1239,5 @@ export const renderTestUtils = {
   wrapOverlayText,
   pickFormat,
   resolutionForFormat,
+  resolveStoryboardAssets,
 };

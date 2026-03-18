@@ -35,6 +35,7 @@ export async function POST(req: Request) {
   const assets = await prisma.mediaAsset.findMany({
     where: {
       userId: user.id,
+      status: "ready",
       id: {
         in: parsed.data.mediaAssetIds,
       },

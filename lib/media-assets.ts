@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { getMediaUploadMode, reconcileMediaAssetsFromStorage } from "@/lib/media-storage";
 
 type ResolveRequestedMediaAssetsParams = {
   userId: string;
@@ -12,22 +13,33 @@ export async function resolveRequestedMediaAssets(params: ResolveRequestedMediaA
     return [];
   }
 
-  return prisma.mediaAsset.findMany({
-    where: {
-      userId: params.userId,
-      OR: [
-        {
-          id: {
-            in: requestedReferences,
+  const findAssets = () =>
+    prisma.mediaAsset.findMany({
+      where: {
+        userId: params.userId,
+        status: "ready",
+        OR: [
+          {
+            id: {
+              in: requestedReferences,
+            },
           },
-        },
-        {
-          path: {
-            in: requestedReferences,
+          {
+            path: {
+              in: requestedReferences,
+            },
           },
-        },
-      ],
-    },
-    orderBy: { createdAt: "asc" },
-  });
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+  let assets = await findAssets();
+
+  if (assets.length === 0 && getMediaUploadMode() === "direct") {
+    await reconcileMediaAssetsFromStorage(params.userId);
+    assets = await findAssets();
+  }
+
+  return assets;
 }

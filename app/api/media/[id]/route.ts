@@ -1,13 +1,14 @@
-import { promises as fsp } from "node:fs";
 import path from "node:path";
 
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
-import { createRangedFileResponse } from "@/lib/ranged-file-response";
+import { resolveMediaContentType, serializeMediaAsset } from "@/lib/media-storage";
+import { createStoredFileResponse, deleteStoredFile, isCloudStoragePath } from "@/lib/storage";
 import { resolveUser } from "@/lib/user";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type Params = {
   params: Promise<{ id: string }>;
@@ -18,12 +19,12 @@ function isWithinDirectory(root: string, candidate: string) {
   return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function contentTypeForPath(assetPath: string) {
-  const ext = path.extname(assetPath).toLowerCase();
-  if (ext === ".png") return "image/png";
-  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-  if (ext === ".mov") return "video/quicktime";
-  return "video/mp4";
+function contentTypeForAsset(asset: { mimeType?: string | null; filename?: string | null; path: string }) {
+  return resolveMediaContentType({
+    filename: asset.filename,
+    mimeType: asset.mimeType,
+    path: asset.path,
+  });
 }
 
 async function findAsset(req: Request, context: Params) {
@@ -45,11 +46,15 @@ async function respondWithAsset(req: Request, context: Params, includeBody: bool
     return NextResponse.json({ error: "Media asset not found" }, { status: 404 });
   }
 
+  if (asset.status !== "ready") {
+    return NextResponse.json({ error: "Media asset upload is not complete" }, { status: 409 });
+  }
+
   try {
-    return await createRangedFileResponse({
+    return await createStoredFileResponse({
       req,
       filePath: asset.path,
-      contentType: contentTypeForPath(asset.path),
+      contentType: contentTypeForAsset(asset),
       includeBody,
     });
   } catch {
@@ -80,15 +85,17 @@ export async function DELETE(req: Request, context: Params) {
     return NextResponse.json({ error: "Media asset not found" }, { status: 404 });
   }
 
-  const uploadsRoot = path.resolve(process.cwd(), "uploads", user.id);
-  const assetPath = path.resolve(asset.path);
+  if (!isCloudStoragePath(asset.path)) {
+    const uploadsRoot = path.resolve(process.cwd(), "uploads", user.id);
+    const assetPath = path.resolve(asset.path);
 
-  if (!isWithinDirectory(uploadsRoot, assetPath)) {
-    return NextResponse.json({ error: "Media asset path is invalid" }, { status: 400 });
+    if (!isWithinDirectory(uploadsRoot, assetPath)) {
+      return NextResponse.json({ error: "Media asset path is invalid" }, { status: 400 });
+    }
   }
 
   try {
-    await fsp.rm(assetPath, { force: true });
+    await deleteStoredFile(asset.path, { ignoreMissing: true });
   } catch {
     return NextResponse.json({ error: "Failed to delete media asset file" }, { status: 500 });
   }
@@ -100,10 +107,6 @@ export async function DELETE(req: Request, context: Params) {
   });
 
   return NextResponse.json({
-    deleted: {
-      id: asset.id,
-      path: asset.path,
-      type: asset.type,
-    },
+    deleted: serializeMediaAsset(asset),
   });
 }

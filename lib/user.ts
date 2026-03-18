@@ -1,7 +1,17 @@
 import { prisma } from "@/lib/db";
 import { DEFAULT_TIMEZONE } from "@/lib/profile-options";
 
+export const LOCAL_USER_ID = "local-user";
+
 export async function getOrCreateLocalUser() {
+  const localUser = await prisma.user.findUnique({
+    where: { id: LOCAL_USER_ID },
+  });
+
+  if (localUser) {
+    return localUser;
+  }
+
   const existing = await prisma.user.findFirst({
     orderBy: { createdAt: "asc" },
   });
@@ -12,6 +22,7 @@ export async function getOrCreateLocalUser() {
 
   return prisma.user.create({
     data: {
+      id: LOCAL_USER_ID,
       timezone: DEFAULT_TIMEZONE,
     },
   });

@@ -10,6 +10,7 @@ import { createGeneratedSupportingImageDetailed } from "@/lib/generated-media";
 import { ensureFfmpegInstalled, FFMPEG_BIN, isImagePath, probeMedia, runBinary } from "@/lib/ffmpeg";
 import { llmChatJSONWithUserContentDetailed } from "@/lib/llm";
 import { generatedSupportEnabled, generatedSupportMediaMode, multimodalStoryboardAnalysisEnabled } from "@/lib/media-flags";
+import { isCloudStoragePath, materializeStoredFile, resolveStoredFileBinaryInput, type StoredFileBinaryInput } from "@/lib/storage";
 import type {
   BeatPurpose,
   CoverageLevel,
@@ -41,6 +42,27 @@ type InputAsset = {
   path: string;
   type: "image" | "video";
 };
+
+type AnalyzableAsset = InputAsset & {
+  analysisInputArgs?: string[];
+  analysisPath: string;
+};
+
+async function resolveAssetPathForStoryboardAnalysis(params: {
+  asset: InputAsset;
+  tempDir: string;
+}): Promise<StoredFileBinaryInput> {
+  if (params.asset.type === "video" && isCloudStoragePath(params.asset.path)) {
+    return resolveStoredFileBinaryInput(params.asset.path);
+  }
+
+  return {
+    inputPath: await materializeStoredFile({
+      filePath: params.asset.path,
+      tempDir: params.tempDir,
+    }),
+  };
+}
 
 const CropWindowSchema = z.object({
   left: z.number().min(0).max(1),
@@ -553,6 +575,7 @@ function shotWindow(center: number, duration?: number) {
 
 async function createAnalysisPreview(params: {
   inputPath: string;
+  inputArgs?: string[];
   outputPath: string;
   timestampSeconds?: number;
   cropWindow?: NormalizedCropWindow;
@@ -572,11 +595,19 @@ async function createAnalysisPreview(params: {
   ];
 
   if (isImagePath(params.inputPath)) {
-    await runBinary(FFMPEG_BIN, ["-y", "-i", params.inputPath, ...outputArgs.slice(1)]);
+    await runBinary(FFMPEG_BIN, ["-y", ...(params.inputArgs ?? []), "-i", params.inputPath, ...outputArgs.slice(1)]);
     return;
   }
 
-  await runBinary(FFMPEG_BIN, ["-y", "-ss", String(params.timestampSeconds ?? 0), "-i", params.inputPath, ...outputArgs.slice(1)]);
+  await runBinary(FFMPEG_BIN, [
+    "-y",
+    "-ss",
+    String(params.timestampSeconds ?? 0),
+    ...(params.inputArgs ?? []),
+    "-i",
+    params.inputPath,
+    ...outputArgs.slice(1),
+  ]);
 }
 
 async function dataUrlForPreview(previewPath: string) {
@@ -762,10 +793,13 @@ async function analyzePreviewWithVision(params: {
 async function analyzeAssetCandidates(params: {
   trend: Trend;
   idea: Idea;
-  asset: InputAsset;
+  asset: AnalyzableAsset;
   tempDir: string;
 }): Promise<MediaAnalysisCandidate[]> {
-  const probe = await probeMedia(params.asset.path);
+  const probe = await probeMedia({
+    inputArgs: params.asset.analysisInputArgs,
+    inputPath: params.asset.analysisPath,
+  });
 
   if (params.asset.type === "image") {
     const cropCandidates = imageCropCandidates(probe);
@@ -775,7 +809,8 @@ async function analyzeAssetCandidates(params: {
       const cropWindow = cropCandidates[index];
       const previewPath = path.join(params.tempDir, `${params.asset.id}-crop-${index + 1}.jpg`);
       await createAnalysisPreview({
-        inputPath: params.asset.path,
+        inputArgs: params.asset.analysisInputArgs,
+        inputPath: params.asset.analysisPath,
         outputPath: previewPath,
         cropWindow,
       });
@@ -808,7 +843,8 @@ async function analyzeAssetCandidates(params: {
     const window = shotWindow(center, probe.duration);
     const previewPath = path.join(params.tempDir, `${params.asset.id}-shot-${index + 1}.jpg`);
     await createAnalysisPreview({
-      inputPath: params.asset.path,
+      inputArgs: params.asset.analysisInputArgs,
+      inputPath: params.asset.analysisPath,
       outputPath: previewPath,
       timestampSeconds: center,
     });
@@ -1318,18 +1354,39 @@ export async function buildStoryboardPlan(params: {
   await ensureFfmpegInstalled();
 
   const assets = params.assets.slice(0, MAX_ASSETS_ANALYZED);
-  const assetsWithProbe = await Promise.all(
-    assets.map(async (asset) => ({
-      ...asset,
-      probe: await probeMedia(asset.path),
-    })),
-  );
-  const pickedFormat = formatForAssets(params.preference ?? "auto", assetsWithProbe);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creator-pilot-storyboard-"));
 
   try {
+    const analyzableAssets = await Promise.all(
+      assets.map(async (asset) => {
+        const analysisInput = await resolveAssetPathForStoryboardAnalysis({
+          asset,
+          tempDir,
+        });
+
+        return {
+          ...asset,
+          analysisInputArgs: analysisInput.inputArgs,
+          analysisPath: analysisInput.inputPath,
+        };
+      }),
+    );
+
+    const assetsWithProbe = await Promise.all(
+      analyzableAssets.map(async (asset) => ({
+        id: asset.id,
+        path: asset.path,
+        type: asset.type,
+        probe: await probeMedia({
+          inputArgs: asset.analysisInputArgs,
+          inputPath: asset.analysisPath,
+        }),
+      })),
+    );
+    const pickedFormat = formatForAssets(params.preference ?? "auto", assetsWithProbe);
+
     const candidateGroups = await Promise.all(
-      assets.map((asset) =>
+      analyzableAssets.map((asset) =>
         analyzeAssetCandidates({
           trend: params.trend,
           idea: params.idea,
@@ -1537,6 +1594,7 @@ export const storyboardTestUtils = {
   estimateBeatDurationSeconds,
   finalizeBeats,
   generatedPrompt,
+  resolveAssetPathForStoryboardAnalysis,
   scoreCandidateForBeat,
   tokenize,
 };

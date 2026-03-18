@@ -1,0 +1,3 @@
+-- SQLite stores both Prisma Int and BigInt values with INTEGER affinity.
+-- No physical column rewrite is required here; this migration exists so
+-- Prisma's migration history matches the updated schema/client expectation.

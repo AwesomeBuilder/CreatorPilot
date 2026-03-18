@@ -25,6 +25,8 @@ import type {
   Idea,
   IdeaContextAssessment,
   IdeaGenerationMode,
+  MediaAssetRecord,
+  MediaUploadMode,
   MetadataResult,
   RenderAudioComposition,
   ScheduleRecommendation,
@@ -46,12 +48,6 @@ type ProfilePayload = {
     mode: "mock" | "live";
     reason: string;
   };
-};
-
-type MediaAsset = {
-  id: string;
-  path: string;
-  type: string;
 };
 
 type JobRecord = {
@@ -109,15 +105,17 @@ type WaitForJobOptions = {
   onLongRunning?: () => void;
 };
 
-function assetDisplayName(assetPath: string) {
-  return assetPath.split(/[/\\]/).at(-1) ?? assetPath;
+function assetDisplayName(asset: Pick<MediaAssetRecord, "filename" | "path">) {
+  const preferred = asset.filename.trim();
+  return preferred.length > 0 ? preferred : asset.path.split(/[/\\]/).at(-1) ?? asset.path;
 }
 
 export default function DashboardPage() {
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("trend");
   const [activeStep, setActiveStep] = useState(0);
   const [profile, setProfile] = useState<ProfilePayload | null>(null);
-  const [assets, setAssets] = useState<MediaAsset[]>([]);
+  const [assets, setAssets] = useState<MediaAssetRecord[]>([]);
+  const [mediaUploadMode, setMediaUploadMode] = useState<MediaUploadMode>("server");
   const [isMediaPanelOpen, setIsMediaPanelOpen] = useState(false);
 
   const [trends, setTrends] = useState<Trend[]>([]);
@@ -152,9 +150,10 @@ export default function DashboardPage() {
   const selectedTrend = trends[selectedTrendIndex] ?? null;
   const selectedIdea = ideas[selectedIdeaIndex] ?? null;
   const effectiveTrend = workflowMode === "trend" ? selectedTrend : mediaLedDerivedTrend;
+  const readyAssets = useMemo(() => assets.filter((asset) => asset.status === "ready"), [assets]);
   const selectedMediaLedAssets = useMemo(
-    () => assets.filter((asset) => mediaLedSelectedAssetIds.includes(asset.id)),
-    [assets, mediaLedSelectedAssetIds],
+    () => readyAssets.filter((asset) => mediaLedSelectedAssetIds.includes(asset.id)),
+    [mediaLedSelectedAssetIds, readyAssets],
   );
   const steps = workflowMode === "trend" ? TREND_STEPS : MEDIA_LED_STEPS;
   const sourcePresetMatch = profile ? findMatchingCuratedPreset(profile.sources.map((source) => source.url)) : null;
@@ -212,6 +211,7 @@ export default function DashboardPage() {
     const response = await fetch("/api/media");
     const data = await response.json();
     setAssets(data.assets ?? []);
+    setMediaUploadMode(data.uploadMode === "direct" ? "direct" : "server");
   };
 
   useEffect(() => {
@@ -235,8 +235,8 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    setMediaLedSelectedAssetIds((current) => current.filter((assetId) => assets.some((asset) => asset.id === assetId)));
-  }, [assets]);
+    setMediaLedSelectedAssetIds((current) => current.filter((assetId) => readyAssets.some((asset) => asset.id === assetId)));
+  }, [readyAssets]);
 
   const rememberJob = (job: JobRecord, fallbackType?: string) => {
     const type = fallbackType ?? job.type;
@@ -435,7 +435,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           workflow: "trend",
           trend: trendForIdeas,
-          mediaAssetIds: linkUploadedMediaToIdeas ? assets.map((asset) => asset.id) : [],
+          mediaAssetIds: linkUploadedMediaToIdeas ? readyAssets.map((asset) => asset.id) : [],
         }),
       });
 
@@ -805,7 +805,7 @@ export default function DashboardPage() {
         return;
       }
 
-      if (assets.length === 0) {
+      if (readyAssets.length === 0) {
         setActiveStep(3);
         setMessage("Autopilot paused before render. Upload media from the top-right button, then continue to render.");
         return;
@@ -814,7 +814,7 @@ export default function DashboardPage() {
       const storyboardResult = await analyzeStoryboardForIdea({
         trend: trendForPipeline,
         idea: ideaForPipeline,
-        mediaAssetIds: assets.map((asset) => asset.id),
+        mediaAssetIds: readyAssets.map((asset) => asset.id),
         preference: "auto",
       });
 
@@ -826,14 +826,14 @@ export default function DashboardPage() {
 
       setActiveStep(3);
       setMessage(
-        `Autopilot using ${assets.length} existing media asset${assets.length === 1 ? "" : "s"}${
+        `Autopilot using ${readyAssets.length} existing media asset${readyAssets.length === 1 ? "" : "s"}${
           storyboardResult.storyboard.generatedSupportUsed ? " plus generated support for uncovered beats" : ""
         } and starting render...`,
       );
       const renderJobId = await startRenderJobWithOptions({
         trend: trendForPipeline,
         idea: ideaForPipeline,
-        mediaAssetIds: assets.map((asset) => asset.id),
+        mediaAssetIds: readyAssets.map((asset) => asset.id),
         preference: "auto",
         allowIrrelevantMedia: false,
         storyboard: storyboardResult.storyboard,
@@ -913,7 +913,7 @@ export default function DashboardPage() {
 
   const buildCustomTrend = (query: string): Trend => ({
     trendTitle: query.trim(),
-    summary: `Custom topic search for ${query.trim()}. Turn it into a creator-ready angle${linkUploadedMediaToIdeas && assets.length > 0 ? " that can be supported by the uploaded media." : " that fits the creator's niche."}`,
+    summary: `Custom topic search for ${query.trim()}. Turn it into a creator-ready angle${linkUploadedMediaToIdeas && readyAssets.length > 0 ? " that can be supported by the uploaded media." : " that fits the creator's niche."}`,
     links: [],
     fitLabel: "Open feed",
     fitReason: "Added from manual trend search.",
@@ -954,11 +954,12 @@ export default function DashboardPage() {
                 Choose the uploaded screenshots or clips that should define this explainer. The media library stays global, but this run only uses the assets
                 you select here.
               </p>
-              {assets.length === 0 ? (
+              {readyAssets.length === 0 ? (
                 <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
                   <CardContent className="p-3 text-sm text-[var(--cp-muted)]">
-                    Upload screenshots or video clips from the top-right media library first. This workflow starts from your own media, then builds the story
-                    around it.
+                    {assets.length === 0
+                      ? "Upload screenshots or video clips from the top-right media library first. This workflow starts from your own media, then builds the story around it."
+                      : "Your uploads are still pending or failed. Wait for them to become ready, or retry/delete them in the media library before continuing."}
                   </CardContent>
                 </Card>
               ) : (
@@ -967,11 +968,11 @@ export default function DashboardPage() {
                     <p className="text-xs text-[var(--cp-muted)]">
                       Selected assets:{" "}
                       <span className="font-medium text-[var(--cp-ink)]">
-                        {mediaLedSelectedAssetIds.length} of {assets.length}
+                        {mediaLedSelectedAssetIds.length} of {readyAssets.length}
                       </span>
                     </p>
                     <div className="grid gap-2">
-                      {assets.map((asset) => {
+                      {readyAssets.map((asset) => {
                         const checked = mediaLedSelectedAssetIds.includes(asset.id);
                         const inputId = `media-led-asset-${asset.id}`;
                         return (
@@ -990,7 +991,7 @@ export default function DashboardPage() {
                               />
                               <div className="min-w-0 flex-1">
                                 <Label htmlFor={inputId} className="block break-all text-xs font-medium text-[var(--cp-ink)]">
-                                  {assetDisplayName(asset.path)}
+                                  {assetDisplayName(asset)}
                                 </Label>
                                 <p className="mt-1 break-all text-[11px] text-[var(--cp-muted-dim)]">{asset.path}</p>
                                 <p className="mt-1 text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{asset.type}</p>
@@ -1012,17 +1013,17 @@ export default function DashboardPage() {
                 >
                   Continue to brief
                 </Button>
-                {assets.length > 0 ? (
+                {readyAssets.length > 0 ? (
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => {
                       clearPipelineOutputs();
-                      setMediaLedSelectedAssetIds(assets.map((asset) => asset.id));
+                      setMediaLedSelectedAssetIds(readyAssets.map((asset) => asset.id));
                     }}
                     className="border-[var(--cp-border-strong)] bg-[var(--cp-surface)] text-[var(--cp-ink-soft)] hover:bg-[var(--cp-surface-muted)]"
                   >
-                    Select all uploads
+                    Select all ready uploads
                   </Button>
                 ) : null}
               </div>
@@ -1341,7 +1342,7 @@ export default function DashboardPage() {
                 <Checkbox
                   id="link-media-to-ideas"
                   checked={linkUploadedMediaToIdeas}
-                  disabled={assets.length === 0}
+                  disabled={readyAssets.length === 0}
                   onCheckedChange={(checked) => setLinkUploadedMediaToIdeas(checked === true)}
                   className="mt-0.5"
                 />
@@ -1350,8 +1351,8 @@ export default function DashboardPage() {
                     Link uploaded media to ideas
                   </Label>
                   <p className="text-xs text-[var(--cp-muted)]">
-                    {assets.length > 0
-                      ? `Use ${assets.length} uploaded media asset${assets.length === 1 ? "" : "s"} as context so ideas stay grounded in visuals you already have.`
+                    {readyAssets.length > 0
+                      ? `Use ${readyAssets.length} ready media asset${readyAssets.length === 1 ? "" : "s"} as context so ideas stay grounded in visuals you already have.`
                       : "Upload media from the top-right button to let idea generation use your existing screenshots and clips."}
                   </p>
                 </div>
@@ -1365,7 +1366,7 @@ export default function DashboardPage() {
               disabled={!selectedTrend}
               className="text-white"
             >
-              {linkUploadedMediaToIdeas && assets.length > 0 ? "Generate ideas with media context" : "Generate ideas"}
+              {linkUploadedMediaToIdeas && readyAssets.length > 0 ? "Generate ideas with media context" : "Generate ideas"}
             </Button>
             <IdeaCards ideas={ideas} selectedIndex={selectedIdeaIndex} onSelect={setSelectedIdeaIndex} />
             <Button
@@ -1382,14 +1383,16 @@ export default function DashboardPage() {
       case 3:
         return (
           <section className="space-y-3">
-            {assets.length === 0 ? (
+            {readyAssets.length === 0 ? (
               <Card size="sm" className="border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-0 ring-0">
                 <CardContent className="p-3 text-sm text-[var(--cp-muted)]">
-                  Upload media from the top-right button before rendering. Render analysis uses your current asset library and any generated support if coverage is weak.
+                  {assets.length === 0
+                    ? "Upload media from the top-right button before rendering. Render analysis uses your current asset library and any generated support if coverage is weak."
+                    : "Wait for your uploads to become ready before rendering. Pending or failed assets are not sent into render analysis."}
                 </CardContent>
               </Card>
             ) : null}
-            <RenderPanel trend={selectedTrend} idea={selectedIdea} assets={assets} onJobCreated={handleRenderJobCreated} />
+            <RenderPanel trend={selectedTrend} idea={selectedIdea} assets={readyAssets} onJobCreated={handleRenderJobCreated} />
             {latestRenderJob?.status === "complete" ? (
               <p className="text-sm text-[var(--cp-success)]">Last render complete. You can proceed to metadata.</p>
             ) : null}
@@ -1532,14 +1535,16 @@ export default function DashboardPage() {
             </div>
             <UploadPanel
               assets={assets}
+              uploadMode={mediaUploadMode}
+              onAssetsReload={loadAssets}
               onUploaded={(uploadedAssets) => {
-                setAssets((current) => [...uploadedAssets, ...current]);
+                setAssets((current) => [...uploadedAssets, ...current.filter((asset) => !uploadedAssets.some((uploaded) => uploaded.id === asset.id))]);
                 setMessage(
                   `Uploaded ${uploadedAssets.length} media asset${uploadedAssets.length === 1 ? "" : "s"}. They are now available for idea generation and render.`,
                 );
               }}
               onDeleted={(deletedAsset) => {
-                const assetName = deletedAsset.path.split(/[/\\]/).at(-1) ?? deletedAsset.path;
+                const assetName = assetDisplayName(deletedAsset);
                 setAssets((current) => current.filter((asset) => asset.id !== deletedAsset.id));
                 setMessage(`Deleted ${assetName} from the media library.`);
               }}

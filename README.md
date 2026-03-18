@@ -246,6 +246,7 @@ ENABLE_GENERATED_SUPPORT_MEDIA="true"
 GENERATED_SUPPORT_MEDIA_MODE="video"
 RUN_RENDER_JOBS_INLINE="false"
 RENDER_STORAGE_BUCKET=""
+MEDIA_STORAGE_BUCKET=""
 RENDER_BACKGROUND_MUSIC_PATH=""
 RENDER_BACKGROUND_MUSIC_GAIN_DB="-22"
 RENDER_BACKGROUND_MUSIC_DUCK_DB="14"
@@ -339,6 +340,7 @@ export ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS="true"
 export ENABLE_GENERATED_SUPPORT_MEDIA="true"
 export GENERATED_SUPPORT_MEDIA_MODE="video"
 export RENDER_STORAGE_BUCKET="YOUR_RENDER_BUCKET"
+export MEDIA_STORAGE_BUCKET="YOUR_MEDIA_BUCKET"
 export YOUTUBE_UPLOAD_MOCK="true"
 
 # Optional for live YouTube OAuth
@@ -348,7 +350,23 @@ export APP_BASE_URL="https://YOUR_CLOUD_RUN_URL"
 export GOOGLE_REDIRECT_URI="https://YOUR_CLOUD_RUN_URL/api/youtube/callback"
 ```
 
-For a first deploy, `APP_BASE_URL` and `GOOGLE_REDIRECT_URI` can be omitted. The deploy script can infer them after the Cloud Run URL is known. Set `RENDER_STORAGE_BUCKET` to a writable Google Cloud Storage bucket if you want renders to survive Cloud Run revisions and instance restarts.
+For a first deploy, `APP_BASE_URL` and `GOOGLE_REDIRECT_URI` can be omitted. The deploy script can infer them after the Cloud Run URL is known. Set `RENDER_STORAGE_BUCKET` to a writable Google Cloud Storage bucket if you want renders to survive Cloud Run revisions and instance restarts. Set `MEDIA_STORAGE_BUCKET` if you want large browser uploads to bypass Cloud Run and go straight to Cloud Storage. If `MEDIA_STORAGE_BUCKET` is omitted, the app falls back to local multipart uploads and Cloud Run request-size limits still apply.
+
+### Direct Media Uploads On Cloud Run
+
+When `MEDIA_STORAGE_BUCKET` is set, the dashboard switches media uploads to browser-to-GCS resumable uploads:
+
+- `POST /api/media/upload-session` creates a pending asset row and returns a resumable upload URL
+- The browser uploads the file directly to Cloud Storage with progress updates
+- `POST /api/media/upload-complete` verifies the object and marks the asset `ready`
+
+Before using this in a deployed environment, set bucket CORS for your app origin:
+
+```bash
+./scripts/configure-media-bucket-cors.sh YOUR_MEDIA_BUCKET https://YOUR_CLOUD_RUN_URL
+```
+
+This direct-upload flow uses Cloud Storage resumable uploads, not XML multipart uploads. The app marks stale pending rows as failed after 24 hours, so no extra bucket lifecycle rule is required just to clean up abandoned resumable sessions.
 
 ### Deploy
 
@@ -389,6 +407,7 @@ Default behavior:
 - Narration is missing from a render: verify `LLM_TTS_MODEL`, `LLM_TTS_VOICE`, and `LLM_API_KEY`
 - Narration hits `gemini-2.5-pro-preview-tts` quota limits: set `LLM_TTS_FALLBACK_MODEL=gemini-2.5-flash-preview-tts` or confirm billing/quota in Google AI Studio
 - Old render previews disappear after a deploy: set `RENDER_STORAGE_BUCKET` so finished variants are copied to Cloud Storage instead of local Cloud Run disk
+- Large media uploads fail on Cloud Run: set `MEDIA_STORAGE_BUCKET` and configure bucket CORS so uploads go straight from the browser to Cloud Storage
 - OAuth callback error: verify `GOOGLE_REDIRECT_URI` and the OAuth app redirect URI match exactly
 - Google shows "app hasn't been verified": keep the OAuth app in Testing mode, add your Google account as a test user, then continue via Advanced for local/dev testing
 - Upload stays in mock mode unexpectedly: check `YOUTUBE_UPLOAD_MOCK` and the OAuth env vars
