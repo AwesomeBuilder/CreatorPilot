@@ -21,6 +21,7 @@ vi.mock("@/lib/db", () => ({
 }));
 
 vi.mock("@/lib/user", () => ({
+  LOCAL_USER_ID: "local-user",
   resolveUser: routeMocks.resolveUser,
 }));
 
@@ -86,6 +87,57 @@ describe("/api/media", () => {
       where: { userId: testUserId },
     });
     expect(routeMocks.prisma.mediaAsset.updateMany).toHaveBeenCalled();
+  });
+
+  it("hides older recovered legacy prefixes for local-user media listings", async () => {
+    vi.stubEnv("MEDIA_STORAGE_BUCKET", "media-bucket");
+    routeMocks.resolveUser.mockResolvedValue({ id: "local-user" });
+    routeMocks.prisma.mediaAsset.count.mockResolvedValue(2);
+    routeMocks.prisma.mediaAsset.updateMany.mockResolvedValue({ count: 0 });
+    routeMocks.prisma.mediaAsset.findMany.mockResolvedValue([
+      {
+        id: "asset-new",
+        userId: "local-user",
+        path: "gs://media-bucket/media/newer-user/asset-new/demo.mp4",
+        type: "video",
+        status: "ready",
+        filename: "Demo Clip.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 4096,
+        createdAt: new Date("2026-03-17T20:20:00.000Z"),
+        updatedAt: new Date("2026-03-17T20:21:00.000Z"),
+      },
+      {
+        id: "asset-old",
+        userId: "local-user",
+        path: "gs://media-bucket/media/older-user/asset-old/demo.mp4",
+        type: "video",
+        status: "ready",
+        filename: "Demo Clip.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 2048,
+        createdAt: new Date("2026-03-17T19:20:00.000Z"),
+        updatedAt: new Date("2026-03-17T19:21:00.000Z"),
+      },
+    ]);
+
+    const response = await GET(new Request("http://localhost/api/media"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      assets: [
+        {
+          id: "asset-new",
+          path: "gs://media-bucket/media/newer-user/asset-new/demo.mp4",
+          type: "video",
+          status: "ready",
+          filename: "Demo Clip.mp4",
+          mimeType: "video/mp4",
+          sizeBytes: 4096,
+        },
+      ],
+      uploadMode: "direct",
+    });
   });
 
   it("stores local uploads when direct mode is not configured", async () => {

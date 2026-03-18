@@ -380,6 +380,51 @@ The service starts with:
 - Next.js production server on port `8080`
 - Public health check endpoint at `/api/health`
 
+### GitHub Actions Auto Deploy
+
+This repo now includes `.github/workflows/deploy-cloud-run.yml`. On pushes to `airia-hackathon-dev` or `main`, GitHub Actions:
+
+- runs `npx vitest run`
+- builds a Docker image
+- pushes the image to Artifact Registry
+- deploys that exact image to Cloud Run
+
+The workflow uses [Workload Identity Federation](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines), so GitHub does not need a long-lived Google Cloud service-account key.
+
+For an existing Cloud Run service, the deploy script reuses the current runtime environment by default. That means you do not need to copy every app secret into GitHub just to keep redeploys working. GitHub only needs the Google Cloud authentication secrets below unless you want GitHub to override a runtime setting explicitly.
+
+Required GitHub repository secrets:
+
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`
+- `GCP_DEPLOYER_SERVICE_ACCOUNT`
+
+Optional GitHub repository secret overrides:
+
+- `LLM_API_KEY`
+- `GOOGLE_CLIENT_SECRET`
+
+Optional GitHub repository variable overrides:
+
+- `LLM_MODEL`
+- `LLM_MODEL_HARD`
+- `LLM_IMAGE_MODEL`
+- `LLM_VIDEO_MODEL`
+- `LLM_TTS_MODEL`
+- `LLM_TTS_FALLBACK_MODEL`
+- `LLM_TTS_VOICE`
+- `LLM_BASE_URL`
+- `ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS`
+- `ENABLE_GENERATED_SUPPORT_MEDIA`
+- `GENERATED_SUPPORT_MEDIA_MODE`
+- `RENDER_ENABLE_GENERATED_NARRATION`
+- `RUN_RENDER_JOBS_INLINE`
+- `RENDER_STORAGE_BUCKET`
+- `MEDIA_STORAGE_BUCKET`
+- `YOUTUBE_UPLOAD_MOCK`
+- `GOOGLE_CLIENT_ID`
+- `APP_BASE_URL`
+- `GOOGLE_REDIRECT_URI`
+
 ## YouTube Setup
 
 1. Open [Google Cloud Console](https://console.cloud.google.com/)

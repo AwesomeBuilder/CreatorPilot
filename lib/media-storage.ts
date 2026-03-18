@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { prisma } from "@/lib/db";
-import { getStorageClient } from "@/lib/storage";
+import { getStorageClient, isCloudStoragePath, parseCloudStoragePath } from "@/lib/storage";
 import type { MediaAssetRecord, MediaAssetStatus, MediaAssetType, MediaUploadMode } from "@/lib/types";
 import { LOCAL_USER_ID } from "@/lib/user";
 
@@ -153,6 +153,71 @@ function parseRecoveredMediaObjectName(objectName: string) {
   };
 }
 
+export function recoveredMediaOwnerIdFromPath(filePath: string) {
+  if (!isCloudStoragePath(filePath)) {
+    return null;
+  }
+
+  try {
+    const { objectName } = parseCloudStoragePath(filePath);
+    return parseRecoveredMediaObjectName(objectName)?.userId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function selectPreferredLocalUserRecoveredMediaAssets<
+  TAsset extends {
+    userId: string;
+    path: string;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+>(userId: string, assets: TAsset[]) {
+  if (userId !== LOCAL_USER_ID || assets.length <= 1) {
+    return assets;
+  }
+
+  const decoratedAssets = assets.map((asset) => ({
+    asset,
+    recoveredOwnerId: recoveredMediaOwnerIdFromPath(asset.path),
+  }));
+
+  if (decoratedAssets.some((entry) => !entry.recoveredOwnerId)) {
+    return assets;
+  }
+
+  const groupedAssets = new Map<string, typeof decoratedAssets>();
+  for (const entry of decoratedAssets) {
+    const existing = groupedAssets.get(entry.recoveredOwnerId!) ?? [];
+    existing.push(entry);
+    groupedAssets.set(entry.recoveredOwnerId!, existing);
+  }
+
+  if (groupedAssets.size <= 1) {
+    return assets;
+  }
+
+  if (groupedAssets.has(LOCAL_USER_ID)) {
+    return decoratedAssets.filter((entry) => entry.recoveredOwnerId === LOCAL_USER_ID).map((entry) => entry.asset);
+  }
+
+  let preferredOwnerId: string | null = null;
+  let preferredUpdatedAt = -Infinity;
+
+  for (const [ownerId, ownerAssets] of groupedAssets) {
+    const newestAssetTimestamp = Math.max(...ownerAssets.map((entry) => entry.asset.updatedAt.getTime()));
+    if (newestAssetTimestamp > preferredUpdatedAt) {
+      preferredOwnerId = ownerId;
+      preferredUpdatedAt = newestAssetTimestamp;
+    }
+  }
+
+  return preferredOwnerId
+    ? decoratedAssets.filter((entry) => entry.recoveredOwnerId === preferredOwnerId).map((entry) => entry.asset)
+    : assets;
+}
+
 function normalizeRecoveredMediaType(filename: string, contentType?: string | null): MediaAssetType {
   if (contentType?.startsWith("video/")) {
     return "video";
@@ -189,6 +254,58 @@ async function listRecoverableMediaFiles(params: {
   return listFiles("media/");
 }
 
+function selectPreferredLocalUserRecoveredFiles<
+  TFile extends {
+    createdAt: Date;
+    updatedAt: Date;
+    parsed: {
+      userId: string;
+    };
+  },
+>(userId: string, files: TFile[]) {
+  if (userId !== LOCAL_USER_ID || files.length <= 1) {
+    return files;
+  }
+
+  const groupedFiles = new Map<string, TFile[]>();
+  for (const file of files) {
+    const existing = groupedFiles.get(file.parsed.userId) ?? [];
+    existing.push(file);
+    groupedFiles.set(file.parsed.userId, existing);
+  }
+
+  if (groupedFiles.size <= 1) {
+    return files;
+  }
+
+  let preferredOwnerId: string | null = null;
+  let preferredUpdatedAt = -Infinity;
+
+  for (const [ownerId, ownerFiles] of groupedFiles) {
+    const newestFileTimestamp = Math.max(...ownerFiles.map((file) => file.updatedAt.getTime()));
+    if (newestFileTimestamp > preferredUpdatedAt) {
+      preferredOwnerId = ownerId;
+      preferredUpdatedAt = newestFileTimestamp;
+    }
+  }
+
+  return preferredOwnerId ? files.filter((file) => file.parsed.userId === preferredOwnerId) : files;
+}
+
+type RecoveredMediaFile = {
+  createdAt: Date;
+  mimeType: string;
+  parsed: {
+    assetId: string;
+    filename: string;
+    userId: string;
+  };
+  path: string;
+  sizeBytes: bigint | null;
+  type: MediaAssetType;
+  updatedAt: Date;
+};
+
 export async function reconcileMediaAssetsFromStorage(userId: string) {
   const bucketName = getMediaStorageBucket();
   if (!bucketName) {
@@ -204,17 +321,37 @@ export async function reconcileMediaAssetsFromStorage(userId: string) {
     return 0;
   }
 
-  await Promise.all(
-    objectFiles.map(async (file) => {
-      const parsed = parseRecoveredMediaObjectName(file.name);
-      if (!parsed) {
-        return;
-      }
+  const recoveredFiles = (
+    await Promise.all(
+      objectFiles.map(async (file) => {
+        const parsed = parseRecoveredMediaObjectName(file.name);
+        if (!parsed) {
+          return null;
+        }
 
-      const [metadata] = await file.getMetadata();
-      const mimeType = inferMediaMimeType(parsed.filename, metadata.contentType ?? null);
-      const updatedAt = safeMetadataDate(metadata.updated) ?? new Date();
-      const createdAt = safeMetadataDate(metadata.timeCreated) ?? updatedAt;
+        const [metadata] = await file.getMetadata();
+        const mimeType = inferMediaMimeType(parsed.filename, metadata.contentType ?? null);
+        const updatedAt = safeMetadataDate(metadata.updated) ?? new Date();
+        const createdAt = safeMetadataDate(metadata.timeCreated) ?? updatedAt;
+
+        return {
+          createdAt,
+          mimeType,
+          parsed,
+          path: `gs://${bucketName}/${file.name}`,
+          sizeBytes: metadata.size ? BigInt(metadata.size) : null,
+          type: normalizeRecoveredMediaType(parsed.filename, metadata.contentType ?? null),
+          updatedAt,
+        };
+      }),
+    )
+  ).filter((file): file is RecoveredMediaFile => file !== null);
+
+  const filesToPersist = selectPreferredLocalUserRecoveredFiles(userId, recoveredFiles);
+
+  await Promise.all(
+    filesToPersist.map(async (file) => {
+      const { createdAt, mimeType, parsed, path: filePath, sizeBytes, type, updatedAt } = file;
 
       await prisma.mediaAsset.upsert({
         where: {
@@ -223,29 +360,29 @@ export async function reconcileMediaAssetsFromStorage(userId: string) {
         create: {
           id: parsed.assetId,
           userId,
-          path: `gs://${bucketName}/${file.name}`,
-          type: normalizeRecoveredMediaType(parsed.filename, metadata.contentType ?? null),
+          path: filePath,
+          type,
           status: "ready",
           filename: parsed.filename,
           mimeType,
-          sizeBytes: metadata.size ? BigInt(metadata.size) : null,
+          sizeBytes,
           createdAt,
           updatedAt,
         },
         update: {
-          path: `gs://${bucketName}/${file.name}`,
-          type: normalizeRecoveredMediaType(parsed.filename, metadata.contentType ?? null),
+          path: filePath,
+          type,
           status: "ready",
           filename: parsed.filename,
           mimeType,
-          sizeBytes: metadata.size ? BigInt(metadata.size) : null,
+          sizeBytes,
           updatedAt,
         },
       });
     }),
   );
 
-  return objectFiles.length;
+  return filesToPersist.length;
 }
 
 export function requestOrigin(req: Request) {

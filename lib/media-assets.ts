@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { getMediaUploadMode, reconcileMediaAssetsFromStorage } from "@/lib/media-storage";
+import { getMediaUploadMode, reconcileMediaAssetsFromStorage, selectPreferredLocalUserRecoveredMediaAssets } from "@/lib/media-storage";
 
 type ResolveRequestedMediaAssetsParams = {
   userId: string;
@@ -35,10 +35,12 @@ export async function resolveRequestedMediaAssets(params: ResolveRequestedMediaA
     });
 
   let assets = await findAssets();
+  assets = selectPreferredLocalUserRecoveredMediaAssets(params.userId, assets);
 
   if (assets.length === 0 && getMediaUploadMode() === "direct") {
     await reconcileMediaAssetsFromStorage(params.userId);
     assets = await findAssets();
+    assets = selectPreferredLocalUserRecoveredMediaAssets(params.userId, assets);
   }
 
   return assets;

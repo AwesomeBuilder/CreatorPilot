@@ -11,6 +11,12 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  GOOGLE_CLOUD_PROJECT: creatorpilot-489322
+  CLOUD_RUN_REGION: us-central1
+  CLOUD_RUN_SERVICE: creator-pilot
+  ARTIFACT_REGISTRY_REPOSITORY: cloud-run-source-deploy
+
 concurrency:
   group: deploy-cloud-run-${{ github.ref }}
   cancel-in-progress: true
@@ -40,9 +46,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
-      CLOUD_RUN_REGION: ${{ vars.CLOUD_RUN_REGION }}
-      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_MODEL: ${{ vars.LLM_MODEL }}
       LLM_MODEL_HARD: ${{ vars.LLM_MODEL_HARD }}
@@ -69,29 +72,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate deploy configuration
-        run: |
-          missing=""
-
-          for name in GOOGLE_CLOUD_PROJECT CLOUD_RUN_REGION CLOUD_RUN_SERVICE LLM_API_KEY; do
-            if [ -z "${!name}" ]; then
-              missing="$missing $name"
-            fi
-          done
-
-          if [ "${YOUTUBE_UPLOAD_MOCK:-true}" != "true" ]; then
-            for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
-              if [ -z "${!name}" ]; then
-                missing="$missing $name"
-              fi
-            done
-          fi
-
-          if [ -n "$missing" ]; then
-            echo "Missing required GitHub Actions variables/secrets:$missing" >&2
-            exit 1
-          fi
-
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
@@ -100,6 +80,24 @@ jobs:
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${{ env.CLOUD_RUN_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          IMAGE_URI: ${{ env.CLOUD_RUN_REGION }}-docker.pkg.dev/${{ env.GOOGLE_CLOUD_PROJECT }}/${{ env.ARTIFACT_REGISTRY_REPOSITORY }}/${{ env.CLOUD_RUN_SERVICE }}:${{ github.sha }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --push \
+            -t "$IMAGE_URI" \
+            .
+          echo "CLOUD_RUN_IMAGE=$IMAGE_URI" >> "$GITHUB_ENV"
 
       - name: Deploy to Cloud Run
         run: ./scripts/deploy-cloud-run.sh

@@ -12,6 +12,7 @@ import {
   markStalePendingMediaAssetsFailed,
   normalizeMediaType,
   reconcileMediaAssetsFromStorage,
+  selectPreferredLocalUserRecoveredMediaAssets,
   serializeMediaAsset,
 } from "@/lib/media-storage";
 import type { MediaAssetRecord } from "@/lib/types";
@@ -36,9 +37,10 @@ export async function GET(req: Request) {
     where: { userId: user.id },
     orderBy: { createdAt: "desc" },
   });
+  const visibleAssets = selectPreferredLocalUserRecoveredMediaAssets(user.id, assets);
 
   return NextResponse.json({
-    assets: assets.map((asset) => serializeMediaAsset(asset)),
+    assets: visibleAssets.map((asset) => serializeMediaAsset(asset)),
     uploadMode: getMediaUploadMode(),
   });
 }
