@@ -1,0 +1,105 @@
+name: Deploy Cloud Run
+
+on:
+  push:
+    branches:
+      - airia-hackathon-dev
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-cloud-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npx vitest run
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+
+    env:
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+      CLOUD_RUN_REGION: ${{ vars.CLOUD_RUN_REGION }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_MODEL: ${{ vars.LLM_MODEL }}
+      LLM_MODEL_HARD: ${{ vars.LLM_MODEL_HARD }}
+      LLM_IMAGE_MODEL: ${{ vars.LLM_IMAGE_MODEL }}
+      LLM_VIDEO_MODEL: ${{ vars.LLM_VIDEO_MODEL }}
+      LLM_TTS_MODEL: ${{ vars.LLM_TTS_MODEL }}
+      LLM_TTS_FALLBACK_MODEL: ${{ vars.LLM_TTS_FALLBACK_MODEL }}
+      LLM_TTS_VOICE: ${{ vars.LLM_TTS_VOICE }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+      ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS: ${{ vars.ENABLE_MULTIMODAL_STORYBOARD_ANALYSIS }}
+      ENABLE_GENERATED_SUPPORT_MEDIA: ${{ vars.ENABLE_GENERATED_SUPPORT_MEDIA }}
+      GENERATED_SUPPORT_MEDIA_MODE: ${{ vars.GENERATED_SUPPORT_MEDIA_MODE }}
+      RENDER_ENABLE_GENERATED_NARRATION: ${{ vars.RENDER_ENABLE_GENERATED_NARRATION }}
+      RUN_RENDER_JOBS_INLINE: ${{ vars.RUN_RENDER_JOBS_INLINE }}
+      RENDER_STORAGE_BUCKET: ${{ vars.RENDER_STORAGE_BUCKET }}
+      MEDIA_STORAGE_BUCKET: ${{ vars.MEDIA_STORAGE_BUCKET }}
+      YOUTUBE_UPLOAD_MOCK: ${{ vars.YOUTUBE_UPLOAD_MOCK }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+      GOOGLE_REDIRECT_URI: ${{ vars.GOOGLE_REDIRECT_URI }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate deploy configuration
+        run: |
+          missing=""
+
+          for name in GOOGLE_CLOUD_PROJECT CLOUD_RUN_REGION CLOUD_RUN_SERVICE LLM_API_KEY; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+
+          if [ "${YOUTUBE_UPLOAD_MOCK:-true}" != "true" ]; then
+            for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
+              if [ -z "${!name}" ]; then
+                missing="$missing $name"
+              fi
+            done
+          fi
+
+          if [ -n "$missing" ]; then
+            echo "Missing required GitHub Actions variables/secrets:$missing" >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: ./scripts/deploy-cloud-run.sh

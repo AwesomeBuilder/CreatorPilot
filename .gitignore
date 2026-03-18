@@ -37,6 +37,7 @@ yarn-error.log*
 
 # local data/assets
 dev*.db
+/prisma/tmp/
 uploads/*
 !uploads/.gitkeep
 renders/*
